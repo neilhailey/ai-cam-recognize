@@ -15,7 +15,7 @@ import uuid
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -57,13 +57,15 @@ MAX_ANALYSIS_FACES = int(os.environ.get("MAX_ANALYSIS_FACES", 30_000))
 SEARCH_FACES = int(os.environ.get("SEARCH_FACES", 6_000))
 
 
-def _run_stl_analysis(stl_path: str, glb_path: str) -> dict:
+def _run_stl_analysis(stl_path: str, glb_path: str, pre_simplified: bool = False) -> dict:
     """Blocking analysis — runs in a thread executor."""
     mesh = mac.load_mesh(stl_path, max_faces=MAX_ANALYSIS_FACES)
 
-    # Very high-poly meshes are simplified by vertex-clustering to fit memory;
-    # that adds small surface noise, so use a looser area tolerance and flag it.
-    approximate = bool(mesh.metadata.get("approximate"))
+    # Simplified meshes carry small surface noise, so judge them with a looser
+    # area tolerance and say so. This covers both meshes we reduced here and ones
+    # the browser already reduced before upload (which arrive small, so the
+    # server-side path would otherwise mistake them for exact originals).
+    approximate = bool(mesh.metadata.get("approximate")) or pre_simplified
     report, face_class = mac.analyze(mesh, area_tol=0.02 if approximate else 0.005)
     if approximate:
         report.caveats.insert(0, "This model was very high-poly, so it was simplified to "
@@ -95,7 +97,7 @@ def health():
 
 
 @app.post("/api/analyze/stl")
-async def analyze_stl(file: UploadFile = File(...)):
+async def analyze_stl(file: UploadFile = File(...), pre_simplified: bool = Form(False)):
     ext = Path(file.filename or "").suffix.lower()
     if ext not in MESH_EXTS:
         raise HTTPException(400, f"Unsupported mesh type '{ext}'. Use one of {sorted(MESH_EXTS)}.")
@@ -115,7 +117,7 @@ async def analyze_stl(file: UploadFile = File(...)):
         loop = asyncio.get_event_loop()
         try:
             result = await loop.run_in_executor(
-                None, _run_stl_analysis, str(stl_path), str(glb_path)
+                None, _run_stl_analysis, str(stl_path), str(glb_path), pre_simplified
             )
         except Exception as exc:
             raise HTTPException(422, f"Could not analyze mesh: {type(exc).__name__}: {exc}")

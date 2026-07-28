@@ -57,7 +57,7 @@ export function App() {
           setNote(`Simplified ${prep.originalFaces.toLocaleString()} → ${prep.faces.toLocaleString()} triangles before upload for speed.`)
         }
         setStage('uploading')
-        setStl(await analyzeStl(prep.file))
+        setStl(await analyzeStl(prep.file, prep.reduced))
         setMode('stl')
       } else {
         const url = URL.createObjectURL(file)

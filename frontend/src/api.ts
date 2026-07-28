@@ -29,9 +29,12 @@ async function postForm<T>(path: string, form: FormData): Promise<T> {
   return res.json() as Promise<T>
 }
 
-export function analyzeStl(file: File): Promise<StlResponse> {
+export function analyzeStl(file: File, preSimplified = false): Promise<StlResponse> {
   const form = new FormData()
   form.append('file', file)
+  // Tell the server the browser already reduced this mesh, so it judges it with
+  // the tolerance for a simplified mesh rather than treating it as exact.
+  form.append('pre_simplified', String(preSimplified))
   return postForm<StlResponse>('/api/analyze/stl', form)
 }
 
