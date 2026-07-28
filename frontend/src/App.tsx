@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { analyzePhoto, analyzeStl, apiUrl, isMeshFile } from './api'
+import { prepareMeshUpload } from './lib/decimateStl'
 import type { PhotoResult, StlResponse } from './types'
 import { Dropzone } from './components/Dropzone'
 import { VerdictCard } from './components/VerdictCard'
@@ -25,6 +26,8 @@ export function App() {
   const [photoUrl, setPhotoUrl] = useState('')
   const [fileName, setFileName] = useState('')
   const [elapsed, setElapsed] = useState(0)
+  const [stage, setStage] = useState<'preparing' | 'uploading'>('uploading')
+  const [note, setNote] = useState('')
   const photoUrlRef = useRef('')
 
   // Tick a seconds counter while an analysis is in flight.
@@ -36,17 +39,25 @@ export function App() {
   }, [mode])
 
   const reset = useCallback(() => {
-    setMode('idle'); setError(''); setStl(null); setPhoto(null); setFileName('')
+    setMode('idle'); setError(''); setStl(null); setPhoto(null); setFileName(''); setNote('')
     if (photoUrlRef.current) URL.revokeObjectURL(photoUrlRef.current)
     photoUrlRef.current = ''; setPhotoUrl('')
   }, [])
 
   const handleFile = useCallback(async (file: File) => {
-    setError(''); setStl(null); setPhoto(null); setFileName(file.name)
+    setError(''); setStl(null); setPhoto(null); setFileName(file.name); setNote('')
     setMode('loading')
     try {
       if (isMeshFile(file)) {
-        setStl(await analyzeStl(file))
+        // Shrink very high-poly STLs locally first — uploading tens of MB is
+        // slower than the analysis itself, and the server reduces them anyway.
+        setStage('preparing')
+        const prep = await prepareMeshUpload(file)
+        if (prep.reduced) {
+          setNote(`Simplified ${prep.originalFaces.toLocaleString()} → ${prep.faces.toLocaleString()} triangles before upload for speed.`)
+        }
+        setStage('uploading')
+        setStl(await analyzeStl(prep.file))
         setMode('stl')
       } else {
         const url = URL.createObjectURL(file)
@@ -99,9 +110,11 @@ export function App() {
           <div className="spinner" />
           <div>Analyzing <strong>{fileName}</strong>… {elapsed > 0 && `${elapsed}s`}</div>
           <div className="loading__hint">
-            {elapsed > 20
-              ? 'Large or high-poly models take longer on the free server — hang tight.'
-              : 'Casting rays to find undercuts…'}
+            {stage === 'preparing'
+              ? 'Simplifying a high-poly mesh in your browser…'
+              : elapsed > 20
+                ? 'Large models take longer on the free server — hang tight.'
+                : 'Uploading and casting rays to find undercuts…'}
           </div>
         </div>
       )}
@@ -116,6 +129,7 @@ export function App() {
       {mode === 'stl' && stl && (
         <div className="result">
           <div className="result__left">
+            {note && <div className="note">{note}</div>}
             <VerdictCard report={stl.report} />
             <StatBars report={stl.report} />
             <OrientationCard orientation={stl.orientation} />
