@@ -61,25 +61,34 @@ export function decimateBinaryStl(buf: ArrayBuffer, n: number, targetFaces: numb
   // Grid coords fit well inside the 2^53 exact-integer range when packed this way.
   const SPAN = 4194304 // 2^22 per axis
   const cell = new Map<number, number>()   // packed grid key -> new vertex index
-  const cx: number[] = [], cy: number[] = [], cz: number[] = []
+  const sx: number[] = [], sy: number[] = [], sz: number[] = [], cnt: number[] = []
   const idx = new Int32Array(n * 3)
 
   for (let v = 0; v < n * 3; v++) {
     const j = v * 3
-    const gx = Math.floor((verts[j] - minX) / res)
-    const gy = Math.floor((verts[j + 1] - minY) / res)
-    const gz = Math.floor((verts[j + 2] - minZ) / res)
+    const x = verts[j], y = verts[j + 1], z = verts[j + 2]
+    const gx = Math.floor((x - minX) / res)
+    const gy = Math.floor((y - minY) / res)
+    const gz = Math.floor((z - minZ) / res)
     const key = (gx * SPAN + gy) * SPAN + gz
     let id = cell.get(key)
     if (id === undefined) {
-      id = cx.length
+      id = cnt.length
       cell.set(key, id)
-      // representative vertex = cell centre
-      cx.push(minX + (gx + 0.5) * res)
-      cy.push(minY + (gy + 0.5) * res)
-      cz.push(minZ + (gz + 0.5) * res)
+      sx.push(0); sy.push(0); sz.push(0); cnt.push(0)
     }
+    // Accumulate so the representative vertex is the cell AVERAGE, not its
+    // centre — snapping to centres adds stair-step noise that reads as fake
+    // undercuts and can flip a 4-axis part to 5-axis.
+    sx[id] += x; sy[id] += y; sz[id] += z; cnt[id]++
     idx[v] = id
+  }
+
+  const cx = new Float64Array(cnt.length)
+  const cy = new Float64Array(cnt.length)
+  const cz = new Float64Array(cnt.length)
+  for (let i = 0; i < cnt.length; i++) {
+    cx[i] = sx[i] / cnt[i]; cy[i] = sy[i] / cnt[i]; cz[i] = sz[i] / cnt[i]
   }
 
   // Keep only triangles whose three vertices landed in distinct cells.
@@ -108,10 +117,20 @@ export function decimateBinaryStl(buf: ArrayBuffer, n: number, targetFaces: numb
 }
 
 /**
+ * Target triangle count for uploads. Must match the backend's MAX_ANALYSIS_FACES —
+ * reducing below what the server can analyse just throws away accuracy. Raise
+ * VITE_MAX_UPLOAD_FACES alongside the backend when running on a bigger instance.
+ */
+export const UPLOAD_TARGET_FACES = Number(import.meta.env.VITE_MAX_UPLOAD_FACES ?? 30_000)
+
+/**
  * Shrink `file` before upload when it is a large binary STL. Returns the
  * original file unchanged when it is small enough or not a binary STL.
  */
-export async function prepareMeshUpload(file: File, targetFaces = 30_000): Promise<DecimateResult> {
+export async function prepareMeshUpload(
+  file: File,
+  targetFaces = UPLOAD_TARGET_FACES,
+): Promise<DecimateResult> {
   const buf = await file.arrayBuffer()
   const n = binaryStlFaceCount(buf)
   if (n === null || n <= targetFaces * 1.5) {

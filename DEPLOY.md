@@ -43,6 +43,35 @@ Push updates with a normal `git push` — both platforms auto-redeploy.
 Back in Render, set `CORS_ORIGINS` to your Vercel URL (e.g.
 `https://ai-cam-recognize.vercel.app`) and redeploy, so only your frontend can call the API.
 
+## Analysis resolution vs instance size
+
+Coarse meshes lose small undercuts, so a 4-axis-machinable part can be reported as
+5-axis. Measured on a real 482k-triangle carving (correct answer: **4-axis, 99.9%**):
+
+| Analysed faces | Verdict | 4-axis reach | Peak RAM |
+|----------------|---------|--------------|----------|
+| 30k (default)  | 5-axis ✗ | 95.2 %      | ~250 MB  |
+| 120k           | 5-axis ✗ | 97.6 %      | ~540 MB  |
+| 190k           | **4-axis ✓** | 98.6 %  | ~700 MB  |
+| 482k (full)    | **4-axis ✓** | 99.9 %  | ~980 MB  |
+
+A 2M-triangle model needs ~2 GB at full resolution. So accuracy is limited by RAM:
+
+| Render plan | RAM / CPU | Suggested `MAX_ANALYSIS_FACES` |
+|-------------|-----------|-------------------------------|
+| Free        | 512 MB / 0.1 | `30000` (default) |
+| Starter     | 512 MB / 0.5 | `30000` — same RAM, ~5x faster only |
+| Standard    | 2 GB / 1     | `400000` — full res for most models |
+| Pro         | 4 GB / 2     | `2000000` — effectively no decimation |
+
+To change it, set **`MAX_ANALYSIS_FACES`** on the Render service (and optionally
+`SEARCH_FACES`, default `6000`, for the orientation/setup/tool searches). Set
+**`VITE_MAX_UPLOAD_FACES`** to the same value on Vercel so the browser stops
+pre-shrinking below what the server can handle. No code changes needed.
+
+Note the upload itself is separate: a full 94 MB STL still takes minutes to send on a
+typical home uplink, which is why the browser reduces it first.
+
 ## Updating later
 
 Push to the repo's default branch — Render and Vercel both auto-redeploy. If you change

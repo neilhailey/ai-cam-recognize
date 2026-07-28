@@ -210,9 +210,9 @@ def _cluster_reduce_binary_stl(path: str, target_faces: int, chunk: int = 200_00
     keeping peak memory a few hundred MB — so a 512 MB host can handle
     multi-million-triangle meshes that trimesh's normal loader would OOM on.
     The grid math is chunked because a whole-array expression would allocate
-    large float64 temporaries. Clustering is lower quality than quadric
-    decimation but fine for accessibility analysis; cell centres become the
-    representative vertices.
+    large float64 temporaries. Each surviving vertex is the *average* of the
+    vertices that fell in its cell, which tracks the original surface closely
+    enough to preserve the axis verdict.
     """
     with open(path, "rb") as fh:
         n = int(np.frombuffer(fh.read(84)[80:84], dtype="<u4")[0])
@@ -251,18 +251,28 @@ def _cluster_reduce_binary_stl(path: str, target_faces: int, chunk: int = 200_00
         # unique() without return_inverse (that array alone would be n*3 int64);
         # map back with a chunked searchsorted instead.
         uniq = np.unique(keys)
+        nv = len(uniq)
+
+        # Pass 3: assign vertices to cells and accumulate per-cell sums. Using the
+        # *average* of the vertices in a cell (not the cell centre) matters a lot:
+        # snapping to centres adds stair-step noise that reads as fake undercuts
+        # and can flip a 4-axis part to 5-axis. The accumulators are tiny (one row
+        # per surviving vertex), so this costs almost nothing.
+        sums = np.zeros((nv, 3), dtype=np.float64)
+        counts = np.zeros(nv, dtype=np.float64)
         faces = np.empty((n, 3), dtype=np.int32)
-        for s in range(0, n * 3, chunk * 3):
-            block = np.searchsorted(uniq, keys[s:s + chunk * 3])
-            faces.reshape(-1)[s:s + len(block)] = block
+        flat = faces.reshape(-1)
+        pos = 0
+        for v in _chunks():
+            idx = np.searchsorted(uniq, keys[pos:pos + len(v)])
+            for i in range(3):
+                sums[:, i] += np.bincount(idx, weights=v[:, i], minlength=nv)
+            counts += np.bincount(idx, minlength=nv)
+            flat[pos:pos + len(v)] = idx
+            pos += len(v)
         del keys
 
-    # Decode unique cell keys back to grid coords → cell-centre vertices.
-    gz = uniq % span[2]
-    t = uniq // span[2]
-    gy = t % span[1]
-    gx = t // span[1]
-    rep = mn + (np.stack([gx, gy, gz], axis=1) + 0.5) * res
+    rep = sums / np.maximum(counts, 1.0)[:, None]
 
     keep = (faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2]) & (faces[:, 0] != faces[:, 2])
     mesh = trimesh.Trimesh(vertices=rep, faces=faces[keep], process=False)

@@ -46,22 +46,31 @@ app.add_middleware(
 _analysis_sem = asyncio.Semaphore(1)
 
 
-SEARCH_FACES = 6_000   # decimation cap for the (multi-run) orientation/setup search
+# Analysis resolution. Tuned for Render's free tier (512 MB RAM / 0.1 CPU); a
+# bigger instance can afford far more detail, which matters because coarse
+# meshes lose small undercuts and can misreport 4-axis parts as 5-axis.
+# Rough peak RAM per analysis: ~250 MB @ 30k faces, ~700 MB @ 190k, ~2 GB @ 2M.
+#   free/starter (512 MB): 30_000     standard (2 GB): 400_000
+#   pro (4 GB):            2_000_000  (effectively "no decimation")
+MAX_ANALYSIS_FACES = int(os.environ.get("MAX_ANALYSIS_FACES", 30_000))
+# Cap for the coarse orientation/setup/tool searches, which run many passes.
+SEARCH_FACES = int(os.environ.get("SEARCH_FACES", 6_000))
 
 
 def _run_stl_analysis(stl_path: str, glb_path: str) -> dict:
     """Blocking analysis — runs in a thread executor."""
-    mesh = mac.load_mesh(stl_path)
+    mesh = mac.load_mesh(stl_path, max_faces=MAX_ANALYSIS_FACES)
 
     # Very high-poly meshes are simplified by vertex-clustering to fit memory;
     # that adds small surface noise, so use a looser area tolerance and flag it.
     approximate = bool(mesh.metadata.get("approximate"))
     report, face_class = mac.analyze(mesh, area_tol=0.02 if approximate else 0.005)
     if approximate:
-        report.caveats.insert(0, "This model was very high-poly, so it was simplified "
-                                 "for analysis — the verdict is approximate and the "
-                                 "percentages are the more reliable signal. For an exact "
-                                 "result, upload a mesh under ~30k triangles.")
+        report.caveats.insert(0, "This model was very high-poly, so it was simplified to "
+                                 f"~{MAX_ANALYSIS_FACES:,} triangles for analysis. Small "
+                                 "undercuts can be lost that way, so a part reported as "
+                                 "5-axis may in fact be 4-axis machinable — treat the "
+                                 "percentages as the reliable signal.")
     mac.colorize(mesh, face_class).export(glb_path)
 
     # Orientation search / setup planning / tool search run many passes, so use a
