@@ -58,11 +58,8 @@ def _run_stl_analysis(stl_path: str, glb_path: str) -> dict:
     mac.colorize(mesh, face_class).export(glb_path)
 
     # Orientation search / setup planning / tool search run many passes, so use a
-    # decimated copy for speed.
-    search_mesh = mesh
-    if len(mesh.faces) > SEARCH_FACES:
-        search_mesh = mesh.simplify_quadric_decimation(SEARCH_FACES)
-        search_mesh.fix_normals()
+    # decimated copy for speed (falls back to full res if the simplifier is absent).
+    search_mesh = mac.decimate(mesh, SEARCH_FACES)
 
     orientation = mac.find_best_orientation(search_mesh)
     setups = mac.plan_setups(search_mesh)

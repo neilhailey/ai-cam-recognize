@@ -145,6 +145,23 @@ def _perp_basis(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------
+def decimate(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
+    """Reduce a mesh to ~``target_faces`` for speed, if it is larger.
+
+    trimesh's ``simplify_quadric_decimation`` needs the optional
+    ``fast_simplification`` backend; if it is missing or fails, we fall back to
+    the full-resolution mesh (slower, but correct) rather than crashing.
+    """
+    if len(mesh.faces) <= target_faces:
+        return mesh
+    try:
+        out = mesh.simplify_quadric_decimation(target_faces)
+        out.fix_normals()
+        return out
+    except Exception:
+        return mesh
+
+
 def load_mesh(path: str, max_faces: int = 150_000) -> trimesh.Trimesh:
     """Load an STL/mesh file, weld it, fix normals, and cap face count."""
     loaded = trimesh.load(path, force="mesh")
@@ -155,10 +172,7 @@ def load_mesh(path: str, max_faces: int = 150_000) -> trimesh.Trimesh:
     mesh.update_faces(mesh.nondegenerate_faces())
     mesh.remove_unreferenced_vertices()
     mesh.fix_normals()
-    if len(mesh.faces) > max_faces:
-        mesh = mesh.simplify_quadric_decimation(max_faces)
-        mesh.fix_normals()
-    return mesh
+    return decimate(mesh, max_faces)
 
 
 # ---------------------------------------------------------------------------
