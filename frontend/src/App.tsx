@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { analyzePhoto, analyzeStl, apiUrl, isMeshFile } from './api'
 import type { PhotoResult, StlResponse } from './types'
 import { Dropzone } from './components/Dropzone'
@@ -24,7 +24,16 @@ export function App() {
   const [photo, setPhoto] = useState<PhotoResult | null>(null)
   const [photoUrl, setPhotoUrl] = useState('')
   const [fileName, setFileName] = useState('')
+  const [elapsed, setElapsed] = useState(0)
   const photoUrlRef = useRef('')
+
+  // Tick a seconds counter while an analysis is in flight.
+  useEffect(() => {
+    if (mode !== 'loading') return
+    setElapsed(0)
+    const id = setInterval(() => setElapsed((s) => s + 1), 1000)
+    return () => clearInterval(id)
+  }, [mode])
 
   const reset = useCallback(() => {
     setMode('idle'); setError(''); setStl(null); setPhoto(null); setFileName('')
@@ -88,7 +97,12 @@ export function App() {
       {mode === 'loading' && (
         <div className="loading">
           <div className="spinner" />
-          <div>Analyzing <strong>{fileName}</strong>…</div>
+          <div>Analyzing <strong>{fileName}</strong>… {elapsed > 0 && `${elapsed}s`}</div>
+          <div className="loading__hint">
+            {elapsed > 20
+              ? 'Large or high-poly models take longer on the free server — hang tight.'
+              : 'Casting rays to find undercuts…'}
+          </div>
         </div>
       )}
 

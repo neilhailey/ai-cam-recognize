@@ -273,7 +273,7 @@ def _cluster_reduce_binary_stl(path: str, target_faces: int, chunk: int = 200_00
     return mesh
 
 
-def load_mesh(path: str, max_faces: int = 150_000) -> trimesh.Trimesh:
+def load_mesh(path: str, max_faces: int = 80_000) -> trimesh.Trimesh:
     """Load an STL/mesh file, weld it, fix normals, and cap face count.
 
     Large binary STLs take a low-memory vertex-clustering path so a small host
