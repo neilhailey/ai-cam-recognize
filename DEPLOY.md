@@ -4,18 +4,15 @@ Same shape as `ai-relief-demo`: FastAPI backend on Render, React/Vite frontend o
 Vercel. Your friend just gets a URL — nothing to install. The STL path works with no
 API key; the photo path needs `OPENAI_API_KEY` set on the backend.
 
-## 0. Put this folder in its own GitHub repo
+## 0. GitHub repo — already done
 
-`AI_CAM_Recognize/` should be the repo root (like `ai-relief-demo` is its own repo).
+The code is pushed to **https://github.com/neilhailey/ai-cam-recognize** (private).
+`.gitignore` excludes `backend/.venv`, `backend/.env`, `backend/output`, and
+`frontend/node_modules`, so your OpenAI key is not in the repo (only `.env.example`).
 
-```bash
-cd AI_CAM_Recognize
-git init && git add . && git commit -m "CNC machinability checker"
-gh repo create ai-cam-recognize --public --source=. --push   # or create on github.com and push
-```
-
-`.gitignore` already excludes `backend/.venv`, `backend/.env`, `backend/output`, and
-`frontend/node_modules` — your OpenAI key is not committed.
+Render and Vercel can deploy from a private repo. If you'd rather it be public (like
+`ai-relief-demo`): `gh repo edit neilhailey/ai-cam-recognize --visibility public`.
+Push updates with a normal `git push` — both platforms auto-redeploy.
 
 ## 1. Backend → Render
 
