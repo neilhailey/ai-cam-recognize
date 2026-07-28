@@ -34,6 +34,7 @@ The module is pure (no FastAPI import) so it can be unit-tested directly.
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -148,22 +149,126 @@ def _perp_basis(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 def decimate(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
     """Reduce a mesh to ~``target_faces`` for speed, if it is larger.
 
-    trimesh's ``simplify_quadric_decimation`` needs the optional
-    ``fast_simplification`` backend; if it is missing or fails, we fall back to
-    the full-resolution mesh (slower, but correct) rather than crashing.
+    Calls the optional ``fast_simplification`` backend directly (trimesh's own
+    ``simplify_quadric_decimation`` wrapper has a version-fragile arg mapping).
+    If the backend is missing or fails, fall back to the full-resolution mesh —
+    slower, but correct — rather than crashing.
     """
     if len(mesh.faces) <= target_faces:
         return mesh
     try:
-        out = mesh.simplify_quadric_decimation(target_faces)
+        import fast_simplification as fs
+        v, f = fs.simplify(
+            np.asarray(mesh.vertices, dtype=np.float64),
+            np.asarray(mesh.faces, dtype=np.int64),
+            target_count=int(target_faces),
+        )
+        out = trimesh.Trimesh(vertices=v, faces=f, process=False)
+        out.merge_vertices()
         out.fix_normals()
         return out
     except Exception:
         return mesh
 
 
+def binary_stl_face_count(path: str) -> Optional[int]:
+    """Return the triangle count if ``path`` is a binary STL, else None.
+
+    A binary STL is exactly ``84 + 50 * n`` bytes, which both identifies the
+    format and lets us decide, without loading, whether a file is too large.
+    """
+    try:
+        size = os.path.getsize(path)
+        with open(path, "rb") as fh:
+            header = fh.read(84)
+        if len(header) < 84:
+            return None
+        n = int(np.frombuffer(header[80:84], dtype="<u4")[0])
+        return n if size == 84 + 50 * n else None
+    except Exception:
+        return None
+
+
+def _cluster_reduce_binary_stl(path: str, target_faces: int, chunk: int = 200_000) -> trimesh.Trimesh:
+    """Low-memory reduction of a big binary STL via streaming vertex clustering.
+
+    Reads the file in chunks (never holding all vertices at once) and snaps
+    vertices to a grid, so peak memory stays a few hundred MB regardless of file
+    size — letting a 512 MB host process multi-million-triangle meshes that would
+    otherwise OOM. Clustering is lower quality than quadric decimation but fine
+    for accessibility analysis. Cell centres are used as representative vertices.
+    """
+    with open(path, "rb") as fh:
+        n = int(np.frombuffer(fh.read(84)[80:84], dtype="<u4")[0])
+
+        def _chunk_verts():
+            fh.seek(84)
+            remaining = n
+            while remaining:
+                c = min(chunk, remaining)
+                buf = np.frombuffer(fh.read(c * 50), dtype=np.uint8).reshape(c, 50)
+                yield np.frombuffer(buf[:, 12:48].tobytes(), dtype="<f4").reshape(c * 3, 3)
+                remaining -= c
+
+        # Pass 1: bounding box (streamed).
+        mn = np.full(3, np.inf)
+        mx = np.full(3, -np.inf)
+        for v in _chunk_verts():
+            mn = np.minimum(mn, v.min(0))
+            mx = np.maximum(mx, v.max(0))
+        diag = float(np.linalg.norm(mx - mn)) or 1.0
+        res = diag / max(1.0, (target_faces ** 0.5) * 0.55)    # grid cell ~ target density
+        span = (np.floor((mx - mn) / res).astype(np.int64) + 2)
+
+        def _pack(v):
+            g = np.floor((v - mn) / res).astype(np.int64)
+            return (g[:, 0] * span[1] + g[:, 1]) * span[2] + g[:, 2]
+
+        # Pass 2: collect all cell keys, reduce to the unique set (then freed).
+        keys = np.empty(n * 3, dtype=np.int64)
+        off = 0
+        for v in _chunk_verts():
+            k = _pack(v)
+            keys[off:off + len(k)] = k
+            off += len(k)
+        uniq = np.unique(keys)
+        del keys
+
+        # Pass 3: map each face's 3 vertices to unique-cell indices (streamed).
+        faces = np.empty((n, 3), dtype=np.int64)
+        off = 0
+        for v in _chunk_verts():
+            c = len(v) // 3
+            idx = np.searchsorted(uniq, _pack(v))
+            faces[off:off + c] = idx.reshape(c, 3)
+            off += c
+
+    # Decode unique cell keys back to grid coords → cell-centre vertices.
+    gz = uniq % span[2]
+    t = uniq // span[2]
+    gy = t % span[1]
+    gx = t // span[1]
+    rep = mn + (np.stack([gx, gy, gz], axis=1) + 0.5) * res
+
+    keep = (faces[:, 0] != faces[:, 1]) & (faces[:, 1] != faces[:, 2]) & (faces[:, 0] != faces[:, 2])
+    mesh = trimesh.Trimesh(vertices=rep, faces=faces[keep], process=False)
+    mesh.update_faces(mesh.nondegenerate_faces())
+    mesh.remove_unreferenced_vertices()
+    mesh.fix_normals()
+    mesh.metadata["approximate"] = True    # clustered: verdict uses a looser tolerance
+    return mesh
+
+
 def load_mesh(path: str, max_faces: int = 150_000) -> trimesh.Trimesh:
-    """Load an STL/mesh file, weld it, fix normals, and cap face count."""
+    """Load an STL/mesh file, weld it, fix normals, and cap face count.
+
+    Large binary STLs take a low-memory vertex-clustering path so a small host
+    can process them; everything else uses trimesh's loader + quadric decimation.
+    """
+    n_bin = binary_stl_face_count(path)
+    if n_bin is not None and n_bin > max_faces:
+        return _cluster_reduce_binary_stl(path, max_faces)
+
     loaded = trimesh.load(path, force="mesh")
     if isinstance(loaded, trimesh.Scene):
         loaded = loaded.dump(concatenate=True)
@@ -239,7 +344,8 @@ def _reachable_from_any(
         todo = ~reached
         if not todo.any():
             break
-        facing = (cand_normals @ d) >= facing_min
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            facing = (cand_normals @ d) >= facing_min
         active = todo & facing
         if not active.any():
             continue
@@ -279,7 +385,7 @@ def analyze(
     """
     intersector, backend = _make_intersector(mesh)
 
-    normals = np.asarray(mesh.face_normals, dtype=np.float64)
+    normals = np.nan_to_num(np.asarray(mesh.face_normals, dtype=np.float64), posinf=0.0, neginf=0.0)
     centroids = np.asarray(mesh.triangles_center, dtype=np.float64)
     areas = np.asarray(mesh.area_faces, dtype=np.float64)
     n = len(normals)
@@ -474,7 +580,7 @@ def _candidate_up_directions(mesh: trimesh.Trimesh, max_n: int = 16) -> np.ndarr
 
 def _prep(mesh: trimesh.Trimesh):
     intersector, backend = _make_intersector(mesh)
-    normals = np.asarray(mesh.face_normals, dtype=np.float64)
+    normals = np.nan_to_num(np.asarray(mesh.face_normals, dtype=np.float64), posinf=0.0, neginf=0.0)
     centroids = np.asarray(mesh.triangles_center, dtype=np.float64)
     areas = np.asarray(mesh.area_faces, dtype=np.float64)
     diagonal = float(np.linalg.norm(mesh.extents)) or 1.0

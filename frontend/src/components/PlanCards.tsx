@@ -55,7 +55,7 @@ export function ToolingCard({ tooling }: { tooling: ToolingResult }) {
       <p className="plan-card__body">
         {tooling.limited ? (
           <>
-            Use a cutter around <strong>⌀{tooling.max_tool_diameter} model units</strong> or
+            Use a cutter around <strong>⌀{tooling.max_tool_diameter} mm</strong> or
             smaller to reach the fine detail — larger tools miss the tightest features.
           </>
         ) : (
@@ -63,7 +63,8 @@ export function ToolingCard({ tooling }: { tooling: ToolingResult }) {
         )}
       </p>
       <div className="plan-card__meta">
-        Approximate guidance from feature accessibility (units follow your STL — usually mm).
+        Approximate guidance from feature accessibility. Assumes your STL is modeled in
+        millimeters (the CAD/CNC standard).
       </div>
     </div>
   )

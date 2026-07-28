@@ -28,7 +28,7 @@ OUTPUT_DIR = Path(__file__).parent / "output"
 OUTPUT_DIR.mkdir(exist_ok=True)
 
 MESH_EXTS = {".stl", ".obj", ".ply", ".glb", ".off", ".3mf"}
-MAX_UPLOAD_MB = 60
+MAX_UPLOAD_MB = 150
 
 app = FastAPI(title="CNC Machinability Checker")
 
@@ -53,8 +53,14 @@ def _run_stl_analysis(stl_path: str, glb_path: str) -> dict:
     """Blocking analysis — runs in a thread executor."""
     mesh = mac.load_mesh(stl_path)
 
-    # Primary verdict + colored GLB on the full-resolution mesh (ideal point tool).
-    report, face_class = mac.analyze(mesh)
+    # Very high-poly meshes are simplified by vertex-clustering to fit memory;
+    # that adds small surface noise, so use a looser area tolerance and flag it.
+    approximate = bool(mesh.metadata.get("approximate"))
+    report, face_class = mac.analyze(mesh, area_tol=0.02 if approximate else 0.005)
+    if approximate:
+        report.caveats.insert(0, "This model was very high-poly, so it was simplified "
+                                 "for analysis — the verdict is approximate. For an exact "
+                                 "result, upload a mesh under ~150k triangles.")
     mac.colorize(mesh, face_class).export(glb_path)
 
     # Orientation search / setup planning / tool search run many passes, so use a
