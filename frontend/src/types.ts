@@ -15,6 +15,7 @@ export interface StlReport {
   vertical_wall_pct: number
   n_faces: number
   ray_backend: string
+  rotary_length: number
   caveats: string[]
 }
 
@@ -48,12 +49,36 @@ export interface ToolingResult {
   reachable_pct: number
 }
 
+export interface Mounting {
+  normal: number[]
+  point: number[]
+  area_pct: number
+  source: 'flat-face' | 'hull-fallback' | 'default-down'
+  flipped: boolean
+  z: number
+}
+
+export interface Rotary {
+  axis: 'x' | 'y' | null
+  length: number
+  grip_frac: number
+}
+
+export interface Dimensions {
+  extents: number[]
+  bounds: number[][]
+  looks_like_mm: boolean
+}
+
 export interface StlResponse {
   session_id: string
   report: StlReport
   orientation: OrientationResult
   setups: SetupPlan
   tooling: ToolingResult
+  mounting: Mounting
+  rotary: Rotary
+  dimensions: Dimensions
   glb_url: string
   legend: Record<string, string>
 }

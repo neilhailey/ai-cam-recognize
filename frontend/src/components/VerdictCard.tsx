@@ -26,8 +26,10 @@ export function VerdictCard({ report }: { report: StlReport }) {
       <div className="verdict__body">
         <div className="verdict__label">{report.verdict_label}</div>
         <div className="verdict__blurb">{s.blurb}</div>
-        {report.best_rotary_axis && (
-          <div className="verdict__meta">Best rotary axis: {report.best_rotary_axis.toUpperCase()}</div>
+        {report.verdict === '4-axis' && report.rotary_length > 0 && (
+          <div className="verdict__meta">
+            Mounted along its longest dimension ({report.rotary_length})
+          </div>
         )}
       </div>
     </div>

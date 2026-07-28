@@ -29,8 +29,8 @@ export function StatBars({ report }: { report: StlReport }) {
 
       <div className="flags">
         {report.enclosed_pct > 0.5 && (
-          <span className="flag flag--danger">
-            {report.enclosed_pct.toFixed(0)}% enclosed cavity (unreachable)
+          <span className="flag flag--muted">
+            hollow model · {report.enclosed_pct.toFixed(0)}% internal void (excluded)
           </span>
         )}
         {report.vertical_wall_pct > 10 && (
@@ -46,7 +46,8 @@ export function StatBars({ report }: { report: StlReport }) {
         <li><span className="dot" style={{ background: '#ffc107' }} /> needs 4-axis (rotary)</li>
         <li><span className="dot" style={{ background: '#f44336' }} /> undercut / 5-axis</li>
         <li><span className="dot" style={{ background: '#212121' }} /> enclosed</li>
-        <li><span className="dot" style={{ background: '#969696' }} /> bed-contact (excluded)</li>
+        <li><span className="dot" style={{ background: '#969696' }} /> mounting face (excluded)</li>
+        <li><span className="dot" style={{ background: '#58a6ff' }} /> held in chuck</li>
       </ul>
     </div>
   )

@@ -153,6 +153,53 @@ def test_max_tool_diameter_box_has_no_limit():
     assert res["limited"] is False, res
 
 
+def test_hollow_model_voids_do_not_drive_the_verdict():
+    """A hollow shell is machinable from solid stock — the void must not count."""
+    report, _ = mac.analyze(hollow_sphere())
+    # the interior is still detected and reported...
+    assert report.enclosed_pct > 5.0, report.to_dict()
+    # ...but the exterior is fully reachable, so it must not read as 5-axis.
+    assert report.machinable_pct["5axis"] > 99.0, report.to_dict()
+    assert report.verdict != mac.VERDICT_5AXIS, report.to_dict()
+
+
+def test_detect_mounting_face_finds_the_flat_base():
+    face = mac.detect_mounting_face(box())          # 40 x 40 x 20
+    assert face["source"] == "flat-face", face
+    # each 40x40 end is 1600 of 6400 total area = 25%
+    assert 20.0 < face["area_pct"] < 30.0, face
+
+
+def test_detect_mounting_face_falls_back_for_organic_shapes():
+    face = mac.detect_mounting_face(sphere())
+    assert face["source"] in ("flat-face", "hull-fallback"), face
+    assert np.isfinite(face["normal"]).all()
+
+
+def test_orient_for_machining_puts_mounting_face_down():
+    m = trimesh.creation.box(extents=(30, 30, 10))
+    m.apply_transform(trimesh.transformations.rotation_matrix(np.pi / 3, [1, 0, 0]))
+    out, info = mac.orient_for_machining(_clean(m))
+    assert abs(out.bounds[0][2]) < 1e-6, info          # sits on z = 0
+    assert info["normal"][2] < -0.9, info              # mounting face points down
+
+
+def test_rotary_axis_is_the_longest_horizontal_span():
+    long_x = _clean(trimesh.creation.box(extents=(100, 20, 20)))
+    assert mac.rotary_axis_for(long_x)[0] == "x"
+    long_y = _clean(trimesh.creation.box(extents=(20, 100, 20)))
+    assert mac.rotary_axis_for(long_y)[0] == "y"
+
+
+def test_chuck_grip_mask_marks_one_end():
+    m = _clean(trimesh.creation.box(extents=(100, 20, 20)))
+    mask = mac.chuck_grip_mask(m, "x", grip_frac=0.2)
+    assert mask.any() and not mask.all()
+    # gripped faces must sit at the low-X end
+    cx = m.triangles_center[:, 0]
+    assert cx[mask].max() < cx[~mask].max()
+
+
 def test_max_tool_diameter_tracks_feature_width():
     """A narrower slot must be cut with a smaller tool than a wider slot."""
     narrow = mac.max_tool_diameter(_slot_box(4))

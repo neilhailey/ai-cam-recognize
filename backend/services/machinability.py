@@ -48,7 +48,8 @@ CLASS_3AXIS = 0      # reachable straight down (or up, if flip allowed)
 CLASS_4AXIS = 1      # needs a rotary (radial) approach
 CLASS_5AXIS = 2      # needs a tilted approach (true undercut)
 CLASS_ENCLOSED = 3   # reachable from no direction at all (internal cavity)
-CLASS_FIXTURE = 4    # bed-contact / bottom face, excluded from the verdict
+CLASS_FIXTURE = 4    # bed-contact / mounting face, excluded from the verdict
+CLASS_CHUCK = 5      # gripped by the rotary chuck (display only, see colorize)
 
 CLASS_COLORS = {
     CLASS_3AXIS:    [ 76, 175,  80, 255],   # green
@@ -56,6 +57,7 @@ CLASS_COLORS = {
     CLASS_5AXIS:    [244,  67,  54, 255],   # red
     CLASS_ENCLOSED: [ 33,  33,  33, 255],   # near-black
     CLASS_FIXTURE:  [150, 150, 150, 255],   # grey
+    CLASS_CHUCK:    [ 88, 166, 255, 255],   # blue — held in the chuck
 }
 
 VERDICT_3AXIS = "3-axis"
@@ -71,9 +73,10 @@ class AnalysisReport:
     best_rotary_axis: Optional[str]    # "x" / "y" / None
     enclosed_pct: float                # % area reachable from no direction
     vertical_wall_pct: float           # % area that is near-vertical (long-tool flag)
-    face_area: float                   # total considered surface area (excl. fixture)
+    face_area: float                   # machinable surface area (excl. fixture + voids)
     n_faces: int
     ray_backend: str                   # "embree" or "trimesh"
+    rotary_length: float = 0.0         # part length along the rotary axis
     caveats: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -86,6 +89,7 @@ class AnalysisReport:
             "vertical_wall_pct": round(self.vertical_wall_pct, 2),
             "n_faces": self.n_faces,
             "ray_backend": self.ray_backend,
+            "rotary_length": round(self.rotary_length, 2),
             "caveats": self.caveats,
         }
 
@@ -107,7 +111,7 @@ def _make_intersector(mesh: trimesh.Trimesh):
 # Direction sets
 # ---------------------------------------------------------------------------
 def _radial_directions(axis: str, step_deg: float) -> np.ndarray:
-    """Directions perpendicular to a rotary ``axis`` ('x' or 'y'), one per step."""
+    """Directions perpendicular to a rotary ``axis``, one per step."""
     angles = np.deg2rad(np.arange(0.0, 360.0, step_deg))
     c, s = np.cos(angles), np.sin(angles)
     z = np.zeros_like(angles)
@@ -115,8 +119,10 @@ def _radial_directions(axis: str, step_deg: float) -> np.ndarray:
         dirs = np.column_stack([z, c, s])
     elif axis == "y":          # rotate in the X-Z plane
         dirs = np.column_stack([c, z, s])
+    elif axis == "z":          # rotate in the X-Y plane
+        dirs = np.column_stack([c, s, z])
     else:
-        raise ValueError(f"rotary axis must be 'x' or 'y', got {axis!r}")
+        raise ValueError(f"rotary axis must be 'x', 'y' or 'z', got {axis!r}")
     return dirs
 
 
@@ -155,6 +161,179 @@ def _perp_basis_many(dirs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     v = np.cross(dirs, u)
     v /= np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-12)
     return u, v
+
+
+# ---------------------------------------------------------------------------
+# Mounting / workholding
+# ---------------------------------------------------------------------------
+def detect_mounting_face(mesh: trimesh.Trimesh, min_area_frac: float = 0.005) -> dict:
+    """Find the surface the part would most naturally be mounted on.
+
+    Takes the largest set of *coplanar* faces: quantize each face's plane
+    (normal direction + offset along it) and sum area per plane. A printed or
+    carved part almost always has a flat base, which wins easily. Purely
+    organic models have no such plane, so we fall back to the largest facet of
+    the convex hull — the flattest place the part can rest.
+
+    Returns ``{normal, point, area_pct, source}``.
+    """
+    normals = np.nan_to_num(np.asarray(mesh.face_normals, dtype=np.float64),
+                            posinf=0.0, neginf=0.0)
+    centroids = np.asarray(mesh.triangles_center, dtype=np.float64)
+    areas = np.asarray(mesh.area_faces, dtype=np.float64)
+    total = float(areas.sum()) or 1.0
+    diag = float(np.linalg.norm(mesh.extents)) or 1.0
+
+    # Quantize the plane each face lies in: direction to ~5 deg, offset to ~1/200 diag.
+    ndir = np.round(normals * 12.0).astype(np.int64)
+    offs = np.round(np.einsum("ij,ij->i", normals, centroids) / (diag / 200.0)).astype(np.int64)
+    keys = np.column_stack([ndir, offs[:, None]])
+    uniq, inv = np.unique(keys, axis=0, return_inverse=True)
+    plane_area = np.bincount(inv, weights=areas, minlength=len(uniq))
+    best = int(np.argmax(plane_area))
+
+    if plane_area[best] >= min_area_frac * total:
+        sel = np.nonzero(inv == best)[0]
+        w = areas[sel]
+        normal = (normals[sel] * w[:, None]).sum(0)
+        normal /= (np.linalg.norm(normal) or 1.0)
+        point = (centroids[sel] * w[:, None]).sum(0) / (w.sum() or 1.0)
+        return {"normal": normal, "point": point,
+                "area_pct": 100.0 * float(plane_area[best]) / total,
+                "source": "flat-face"}
+
+    # Fallback: the biggest face of the convex hull is the flattest resting spot.
+    try:
+        hull = mesh.convex_hull
+        i = int(np.argmax(hull.area_faces))
+        return {"normal": np.asarray(hull.face_normals[i], dtype=np.float64),
+                "point": np.asarray(hull.triangles_center[i], dtype=np.float64),
+                "area_pct": 100.0 * float(hull.area_faces[i]) / total,
+                "source": "hull-fallback"}
+    except Exception:
+        return {"normal": np.array([0.0, 0.0, -1.0]),
+                "point": np.asarray(mesh.centroid, dtype=np.float64),
+                "area_pct": 0.0, "source": "default-down"}
+
+
+def orient_for_machining(mesh: trimesh.Trimesh, flip: bool = False) -> tuple[trimesh.Trimesh, dict]:
+    """Stand the part on its mounting face, so +Z means 'straight down onto it'.
+
+    Rotates so the detected mounting face points -Z and drops the part to z=0.
+    ``flip`` turns it 180 deg about X first, which is how the UI offers the
+    opposite setup.
+    """
+    out = mesh.copy()
+    face = detect_mounting_face(out)
+
+    # Put the mounting face down first...
+    out.apply_transform(
+        trimesh.geometry.align_vectors(face["normal"], np.array([0.0, 0.0, -1.0])))
+    # ...then, if asked, turn the part over so it rests on the opposite side.
+    # (Order matters: flipping first would just be undone by the alignment.)
+    if flip:
+        out.apply_transform(trimesh.transformations.rotation_matrix(math.pi, [1, 0, 0]))
+    out.apply_translation([0.0, 0.0, -float(out.bounds[0][2])])   # sit on z=0
+
+    # By construction the part now rests on the z=0 plane, so that is the mounting
+    # plane; measure how much surface actually lies in it.
+    centroids = np.asarray(out.triangles_center, dtype=np.float64)
+    normals = np.nan_to_num(np.asarray(out.face_normals, dtype=np.float64),
+                            posinf=0.0, neginf=0.0)
+    areas = np.asarray(out.area_faces, dtype=np.float64)
+    span = max(float(out.extents[2]), 1e-9)
+    on_bed = (centroids[:, 2] < 0.02 * span) & (normals[:, 2] < -0.9)
+    seated = 100.0 * float(areas[on_bed].sum()) / (float(areas.sum()) or 1.0)
+
+    info = {
+        "normal": [0.0, 0.0, -1.0],
+        "point": [round(float(x), 3) for x in
+                  (centroids[on_bed].mean(0) if on_bed.any() else out.centroid)],
+        "area_pct": round(seated, 1),
+        "source": face["source"] if not flip else "flipped-side",
+        "flipped": bool(flip),
+        "z": 0.0,
+    }
+    return out, info
+
+
+def interior_void_faces(mesh: trimesh.Trimesh) -> np.ndarray:
+    """Boolean mask of faces belonging to a shell sealed inside the outer surface.
+
+    Hollow print-style models carry a second, inner shell. Cut from solid stock
+    that interior simply does not exist, so it must not count against the
+    verdict. Detected structurally — a separate connected surface component whose
+    bounds sit inside the outermost one — rather than by reachability, so that a
+    deep pocket or a region a fat tool cannot enter (both still part of the outer
+    surface) keeps counting against the verdict, as it should.
+    """
+    n = len(mesh.faces)
+    empty = np.zeros(n, dtype=bool)
+    try:
+        groups = trimesh.graph.connected_components(
+            mesh.face_adjacency, nodes=np.arange(n), min_len=1)
+    except Exception:
+        return empty
+    if len(groups) < 2:
+        return empty
+
+    tris = np.asarray(mesh.triangles)
+    boxes = [(tris[g].reshape(-1, 3).min(0), tris[g].reshape(-1, 3).max(0)) for g in groups]
+    outer = int(np.argmax([float(np.linalg.norm(hi - lo)) for lo, hi in boxes]))
+    olo, ohi = boxes[outer]
+
+    mask = empty.copy()
+    for i, g in enumerate(groups):
+        if i == outer:
+            continue
+        lo, hi = boxes[i]
+        if bool((lo >= olo - 1e-9).all() and (hi <= ohi + 1e-9).all()):
+            mask[np.asarray(g, dtype=np.int64)] = True
+    return mask
+
+
+def rotary_axis_for(mesh: trimesh.Trimesh) -> tuple[str, float]:
+    """Rotary axis for 4-axis work: the part's longest dimension.
+
+    You mount a part in a 4th axis along its length. Reachability about an axis
+    depends only on that axis's direction relative to the geometry, not on how
+    the part happens to be sitting, so we are free to pick the longest axis even
+    if it is currently vertical — the part simply gets laid down to be held
+    (see ``lay_down_along``).
+    """
+    ext = np.asarray(mesh.extents, dtype=np.float64)
+    k = int(np.argmax(ext))
+    return "xyz"[k], float(ext[k])
+
+
+def lay_down_along(mesh: trimesh.Trimesh, axis: str,
+                   face_class: Optional[np.ndarray] = None) -> trimesh.Trimesh:
+    """Rotate the part so ``axis`` runs along X, i.e. how it sits in the chuck.
+
+    A rigid rotation, so per-face results computed beforehand stay valid — the
+    faces keep their indices, only their positions change.
+    """
+    src = {"x": [1.0, 0, 0], "y": [0, 1.0, 0], "z": [0, 0, 1.0]}[axis]
+    out = mesh.copy()
+    if axis != "x":
+        out.apply_transform(trimesh.geometry.align_vectors(
+            np.array(src), np.array([1.0, 0.0, 0.0])))
+    out.apply_translation([0.0, 0.0, -float(out.bounds[0][2])])
+    if face_class is not None:
+        out.metadata["face_class"] = face_class
+    return out
+
+
+def chuck_grip_mask(mesh: trimesh.Trimesh, axis: str, grip_frac: float = 0.12) -> np.ndarray:
+    """Faces at the end of the part that the rotary chuck would clamp onto.
+
+    The chuck grips one end along the rotary axis; we mark the outer
+    ``grip_frac`` of the part's length there so it can be shown in the viewer.
+    """
+    k = 0 if axis == "x" else 1
+    c = np.asarray(mesh.triangles_center, dtype=np.float64)[:, k]
+    lo, hi = float(c.min()), float(c.max())
+    return c <= lo + grip_frac * max(hi - lo, 1e-9)
 
 
 # ---------------------------------------------------------------------------
@@ -404,7 +583,7 @@ def analyze(
     rotary_axes: tuple = ("x", "y"),
     radial_step_deg: float = 3.0,
     sphere_dirs: int = 400,
-    area_tol: float = 0.005,          # 0.5% of area may be unreachable and still "pass"
+    area_tol: float = 0.02,           # 2% of area may be unreachable and still "pass"
     vertical_deg: float = 10.0,       # within this of vertical => "vertical wall"
     tool_diameter: float = 0.0,       # in model units; 0 = ideal point tool (visibility only)
 ) -> tuple[AnalysisReport, np.ndarray]:
@@ -428,7 +607,7 @@ def analyze(
 
     face_class = np.full(n, CLASS_ENCLOSED, dtype=np.int64)
 
-    # --- fixturing: the bottom faces sit on the bed and are not machined ------
+    # --- fixturing: faces lying in the mounting plane are clamped, not machined
     z = centroids[:, 2]
     z_min = float(z.min())
     z_span = max(float(z.max()) - z_min, 1e-9)
@@ -437,9 +616,11 @@ def analyze(
     fixture = down & near_floor
     face_class[fixture] = CLASS_FIXTURE
 
-    considered = np.nonzero(~fixture)[0]
-    total_area = float(areas[considered].sum()) or 1.0
-    tol_area = area_tol * total_area
+    # Interior shells of a hollow model do not exist in solid stock — set aside.
+    voids = interior_void_faces(mesh) & (~fixture)
+
+    considered = np.nonzero(~fixture & ~voids)[0]
+    tol_area = area_tol * (float(areas[considered].sum()) or 1.0)
 
     def area_of(mask_idx) -> float:
         return float(areas[mask_idx].sum())
@@ -453,18 +634,30 @@ def analyze(
 
     remaining = considered[~ok3]
 
-    # --- 4-axis: radial directions around the best rotary axis -----------------
-    best_axis = None
+    # --- 4-axis: radial directions about the rotary axis -----------------------
+    # The 4th axis is horizontal, so the part spins about whichever of X/Y it is
+    # longest along — that is how it would actually be held in the chuck.
+    best_axis, rotary_length = rotary_axis_for(mesh)
     best_ok4 = None
-    best_gained = -1.0
     if len(remaining):
-        for axis in rotary_axes:
+        ext = np.asarray(mesh.extents, dtype=np.float64)
+        # Mount along the longest axis. When two spans are within a few percent
+        # there is no meaningful "longest", so among those near-equal candidates
+        # take whichever actually reaches more — e.g. a cross-drilled cylinder is
+        # square in plan, and only one radial plane can see down the bore.
+        longest = float(ext.max())
+        candidates = [ax for ax, e in zip("xyz", ext)
+                      if e >= longest - 0.05 * longest]
+
+        best_gained = -1.0
+        for axis in candidates:
             dirs = _radial_directions(axis, radial_step_deg)
             ok4 = _reachable_from_any(intersector, centroids, normals, remaining,
                                       dirs, diagonal, eps_face, offset, tool_radius)
             gained = area_of(remaining[ok4])
             if gained > best_gained:
                 best_gained, best_axis, best_ok4 = gained, axis, ok4
+        rotary_length = float(ext["xyz".index(best_axis)])
 
     if best_ok4 is not None:
         four_idx = remaining[best_ok4]
@@ -485,14 +678,22 @@ def analyze(
     a5 = area_of(np.nonzero(face_class == CLASS_5AXIS)[0])
     aenc = area_of(np.nonzero(face_class == CLASS_ENCLOSED)[0])
 
-    pct3 = 100.0 * a3 / total_area
-    pct4 = 100.0 * (a3 + a4) / total_area          # cumulative: 4-axis machine can do 3-axis work
-    pct5 = 100.0 * (a3 + a4 + a5) / total_area
-    enclosed_pct = 100.0 * aenc / total_area
+    # The denominator is the *outer* surface (fixture faces and hollow-model
+    # interiors already removed). Anything unreachable that is still part of the
+    # outer surface — a deep pocket, or a slot too narrow for the tool — stays in
+    # and correctly counts against the verdict.
+    void_area = area_of(np.nonzero(voids)[0])
+    machinable_area = float(areas[considered].sum()) or 1.0
+    tol_area = area_tol * machinable_area
 
-    if (total_area - a3) <= tol_area:
+    pct3 = 100.0 * a3 / machinable_area
+    pct4 = 100.0 * (a3 + a4) / machinable_area     # cumulative: a 4-axis machine does 3-axis work
+    pct5 = 100.0 * (a3 + a4 + a5) / machinable_area
+    enclosed_pct = 100.0 * void_area / (machinable_area + void_area)
+
+    if (machinable_area - a3) <= tol_area:
         verdict = VERDICT_3AXIS
-    elif (total_area - a3 - a4) <= tol_area:
+    elif (machinable_area - a3 - a4) <= tol_area:
         verdict = VERDICT_4AXIS
     else:
         verdict = VERDICT_5AXIS
@@ -500,11 +701,14 @@ def analyze(
     # vertical-wall flag (long-tool hint) — near-vertical, non-fixture faces
     vertical = np.abs(normals[:, 2]) < math.sin(math.radians(vertical_deg))
     vertical_area = area_of(np.nonzero(vertical & (~fixture))[0])
-    vertical_pct = 100.0 * vertical_area / total_area
+    vertical_pct = 100.0 * vertical_area / machinable_area
 
     label = {
         VERDICT_3AXIS: "3-axis" + (" (2-sided)" if allow_flip and pct3 > 50 else ""),
-        VERDICT_4AXIS: f"4-axis (rotary about {(best_axis or 'x').upper()})",
+        # The part gets mounted along its longest dimension, so name it that way
+        # rather than by a model-space axis letter, which flips as soon as the
+        # part is laid into the chuck.
+        VERDICT_4AXIS: "4-axis (rotary along the part's length)",
         VERDICT_5AXIS: "5-axis required",
     }[verdict]
 
@@ -527,10 +731,12 @@ def analyze(
         ]
     if allow_flip:
         caveats.append("Assumes the stock can be flipped once (2-sided setup) for "
-                       "3-axis work; the bottom bed-contact face is excluded.")
+                       "3-axis work; the mounting face itself is excluded.")
     if enclosed_pct > 0.5:
-        caveats.append(f"~{enclosed_pct:.0f}% of the surface bounds a fully enclosed "
-                       "cavity that no external tool can reach without splitting the stock.")
+        caveats.append(f"This model is hollow — ~{enclosed_pct:.0f}% of its surface is "
+                       "an internal void. Cut from solid stock that interior does not "
+                       "exist, so it is excluded from the verdict rather than counted "
+                       "as unreachable.")
     if vertical_pct > 10:
         caveats.append(f"~{vertical_pct:.0f}% of the surface is near-vertical wall — "
                        "machinable but may require long or thin tooling.")
@@ -542,9 +748,10 @@ def analyze(
         best_rotary_axis=best_axis if verdict != VERDICT_3AXIS else None,
         enclosed_pct=enclosed_pct,
         vertical_wall_pct=vertical_pct,
-        face_area=total_area,
+        face_area=machinable_area,
         n_faces=n,
         ray_backend=backend,
+        rotary_length=rotary_length,
         caveats=caveats,
     )
     return report, face_class
@@ -553,11 +760,25 @@ def analyze(
 # ---------------------------------------------------------------------------
 # Colorized export
 # ---------------------------------------------------------------------------
-def colorize(mesh: trimesh.Trimesh, face_class: np.ndarray) -> trimesh.Trimesh:
-    """Return a copy of ``mesh`` with per-face colors set from CLASS_COLORS."""
+def colorize(mesh: trimesh.Trimesh, face_class: np.ndarray,
+             chuck_axis: Optional[str] = None) -> trimesh.Trimesh:
+    """Return a copy of ``mesh`` with per-face colors set from CLASS_COLORS.
+
+    When ``chuck_axis`` is given (4-axis work), the end of the part the rotary
+    chuck clamps is recoloured so it is visible in the viewer. This is display
+    only — it happens after classification, so the reported percentages are
+    unaffected.
+    """
+    shown = np.asarray(face_class).copy()
+    if chuck_axis:
+        shown[chuck_grip_mask(mesh, chuck_axis)] = CLASS_CHUCK
     colored = mesh.copy()
-    colors = np.array([CLASS_COLORS[int(c)] for c in face_class], dtype=np.uint8)
-    colored.visual.face_colors = colors
+    # Give every face its own vertices. glTF stores colour per *vertex*, so a
+    # vertex shared by two classes would blend them and smear the boundaries
+    # into a gradient instead of showing crisp reachable/undercut regions.
+    colored.unmerge_vertices()
+    colored.visual.face_colors = np.array(
+        [CLASS_COLORS[int(c)] for c in shown], dtype=np.uint8)
     return colored
 
 

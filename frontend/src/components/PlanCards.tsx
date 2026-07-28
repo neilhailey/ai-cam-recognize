@@ -1,4 +1,4 @@
-import type { OrientationResult, SetupPlan, ToolingResult } from '../types'
+import type { Dimensions, Mounting, OrientationResult, Rotary, SetupPlan, ToolingResult, Verdict } from '../types'
 
 export function OrientationCard({ orientation }: { orientation: OrientationResult }) {
   return (
@@ -48,14 +48,44 @@ export function SetupPlanCard({ plan }: { plan: SetupPlan }) {
   )
 }
 
-export function ToolingCard({ tooling }: { tooling: ToolingResult }) {
+export function MountingCard(
+  { mounting, rotary, verdict }: { mounting: Mounting; rotary: Rotary; verdict: Verdict },
+) {
+  const how = verdict === '4-axis'
+    ? `Held in a rotary chuck, spinning about ${(rotary.axis ?? 'x').toUpperCase()}`
+    : 'Clamped flat on the bed'
+  const found = mounting.source === 'flat-face'
+    ? `largest flat face (${mounting.area_pct}% of the surface)`
+    : 'no flat face found — resting on its flattest side'
+  return (
+    <div className="plan-card">
+      <div className="plan-card__title">🧲 Assumed mounting</div>
+      <p className="plan-card__body">
+        {how}, on the {found}.
+      </p>
+      <div className="plan-card__meta">
+        Shown in the viewer{verdict === '4-axis' ? ' — blue is the end inside the chuck' : ''}.
+        {mounting.flipped ? ' Model is flipped.' : ''} Use “Flip model” to mount the other way up.
+      </div>
+    </div>
+  )
+}
+
+export function ToolingCard(
+  { tooling, dimensions }: { tooling: ToolingResult; dimensions?: Dimensions },
+) {
+  // STL files carry no units. Anything under ~10 across is almost certainly a
+  // normalised export rather than millimetres, so don't claim mm we can't back up.
+  const mm = dimensions?.looks_like_mm ?? true
+  const unit = mm ? 'mm' : 'units'
+  const size = dimensions?.extents?.map((e) => e.toFixed(mm ? 0 : 2)).join(' × ')
   return (
     <div className="plan-card">
       <div className="plan-card__title">🔩 Tooling</div>
       <p className="plan-card__body">
         {tooling.limited ? (
           <>
-            Use a cutter around <strong>⌀{tooling.max_tool_diameter} mm</strong> or
+            Use a cutter around <strong>⌀{tooling.max_tool_diameter} {unit}</strong> or
             smaller to reach the fine detail — larger tools miss the tightest features.
           </>
         ) : (
@@ -63,8 +93,11 @@ export function ToolingCard({ tooling }: { tooling: ToolingResult }) {
         )}
       </p>
       <div className="plan-card__meta">
-        Approximate guidance from feature accessibility. Assumes your STL is modeled in
-        millimeters (the CAD/CNC standard).
+        Approximate guidance from feature accessibility.{' '}
+        {size && <>Model measures {size} {unit}. </>}
+        {mm
+          ? 'Assumes your STL is modelled in millimetres.'
+          : 'This STL has no real-world scale (it is normalised), so sizes are in file units — scale it before cutting.'}
       </div>
     </div>
   )

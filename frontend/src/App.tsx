@@ -7,7 +7,7 @@ import { VerdictCard } from './components/VerdictCard'
 import { StatBars } from './components/StatBars'
 import { MeshViewer } from './components/MeshViewer'
 import { PhotoResultCard } from './components/PhotoResultCard'
-import { OrientationCard, SetupPlanCard, ToolingCard } from './components/PlanCards'
+import { MountingCard, OrientationCard, SetupPlanCard, ToolingCard } from './components/PlanCards'
 
 type Mode = 'idle' | 'loading' | 'stl' | 'photo' | 'error'
 
@@ -28,7 +28,9 @@ export function App() {
   const [elapsed, setElapsed] = useState(0)
   const [stage, setStage] = useState<'preparing' | 'uploading'>('uploading')
   const [note, setNote] = useState('')
+  const [flipped, setFlipped] = useState(false)
   const photoUrlRef = useRef('')
+  const lastMeshRef = useRef<{ file: File; reduced: boolean } | null>(null)
 
   // Tick a seconds counter while an analysis is in flight.
   useEffect(() => {
@@ -57,7 +59,9 @@ export function App() {
           setNote(`Simplified ${prep.originalFaces.toLocaleString()} → ${prep.faces.toLocaleString()} triangles before upload for speed.`)
         }
         setStage('uploading')
-        setStl(await analyzeStl(prep.file, prep.reduced))
+        lastMeshRef.current = { file: prep.file, reduced: prep.reduced }
+        setStl(await analyzeStl(prep.file, prep.reduced, false))
+        setFlipped(false)
         setMode('stl')
       } else {
         const url = URL.createObjectURL(file)
@@ -72,6 +76,21 @@ export function App() {
       setMode('error')
     }
   }, [])
+
+  const flipModel = useCallback(async () => {
+    const last = lastMeshRef.current
+    if (!last) return
+    const next = !flipped
+    setMode('loading'); setStage('uploading'); setError('')
+    try {
+      setStl(await analyzeStl(last.file, last.reduced, next))
+      setFlipped(next)
+      setMode('stl')
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e))
+      setMode('error')
+    }
+  }, [flipped])
 
   const loadSample = useCallback(async (name: string) => {
     try {
@@ -134,16 +153,32 @@ export function App() {
             <StatBars report={stl.report} />
             <OrientationCard orientation={stl.orientation} />
             <SetupPlanCard plan={stl.setups} />
-            <ToolingCard tooling={stl.tooling} />
+            <ToolingCard tooling={stl.tooling} dimensions={stl.dimensions} />
+            <MountingCard mounting={stl.mounting} rotary={stl.rotary} verdict={stl.report.verdict} />
             <details className="caveats">
               <summary>What this check does &amp; doesn’t cover</summary>
               <ul>{stl.report.caveats.map((c, i) => <li key={i}>{c}</li>)}</ul>
             </details>
-            <button className="btn" onClick={reset}>Check another</button>
+            <div className="btn-row">
+              <button className="btn" onClick={reset}>Check another</button>
+              <button className="btn btn--ghost" onClick={flipModel}>
+                {flipped ? 'Un-flip model' : 'Flip model'}
+              </button>
+            </div>
           </div>
           <div className="result__viewer">
-            <MeshViewer url={apiUrl(stl.glb_url)} onLoadError={(m) => setError(m)} />
-            <div className="viewer-caption">Drag to orbit · red = undercut regions</div>
+            <MeshViewer
+              url={apiUrl(stl.glb_url)}
+              verdict={stl.report.verdict}
+              rotaryAxis={stl.rotary?.axis ?? null}
+              gripFrac={stl.rotary?.grip_frac}
+              onLoadError={(m) => setError(m)}
+            />
+            <div className="viewer-caption">
+              Drag to orbit · {stl.report.verdict === '4-axis'
+                ? 'blue = held in chuck · red = undercut'
+                : 'red = undercut regions'}
+            </div>
           </div>
         </div>
       )}
