@@ -1,0 +1,11 @@
+fastapi==0.115.0
+uvicorn[standard]==0.30.6
+python-multipart==0.0.12
+python-dotenv==1.0.1
+numpy<2
+scipy
+trimesh>=4.0.0
+manifold3d          # boolean backend (used for test geometry / robustness)
+networkx            # trimesh graph ops
+embreex             # fast ray casting; engine falls back to pure-python if absent
+openai>=1.54.0,<2.0.0

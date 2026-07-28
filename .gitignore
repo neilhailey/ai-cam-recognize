@@ -1,0 +1,16 @@
+# Python
+backend/.venv/
+backend/__pycache__/
+backend/**/__pycache__/
+backend/.env
+backend/output/
+*.pyc
+.pytest_cache/
+
+# Node / Vite
+frontend/node_modules/
+frontend/dist/
+frontend/.env.local
+
+# macOS
+.DS_Store

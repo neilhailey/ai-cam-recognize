@@ -1,0 +1,16 @@
+services:
+  - type: web
+    name: ai-cam-recognize-backend
+    env: python
+    region: oregon
+    plan: free
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false          # paste in the Render dashboard (only needed for the photo path)
+      - key: CORS_ORIGINS
+        sync: false          # paste your Vercel URL here after the frontend is deployed
+      - key: PYTHON_VERSION
+        value: 3.12.0
