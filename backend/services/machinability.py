@@ -204,58 +204,58 @@ def binary_stl_face_count(path: str) -> Optional[int]:
 
 
 def _cluster_reduce_binary_stl(path: str, target_faces: int, chunk: int = 200_000) -> trimesh.Trimesh:
-    """Low-memory reduction of a big binary STL via streaming vertex clustering.
+    """Low-memory reduction of a big binary STL via vertex clustering.
 
-    Reads the file in chunks (never holding all vertices at once) and snaps
-    vertices to a grid, so peak memory stays a few hundred MB regardless of file
-    size — letting a 512 MB host process multi-million-triangle meshes that would
-    otherwise OOM. Clustering is lower quality than quadric decimation but fine
-    for accessibility analysis. Cell centres are used as representative vertices.
+    Parses the file directly with numpy (float32) and snaps vertices to a grid,
+    keeping peak memory a few hundred MB — so a 512 MB host can handle
+    multi-million-triangle meshes that trimesh's normal loader would OOM on.
+    The grid math is chunked because a whole-array expression would allocate
+    large float64 temporaries. Clustering is lower quality than quadric
+    decimation but fine for accessibility analysis; cell centres become the
+    representative vertices.
     """
     with open(path, "rb") as fh:
         n = int(np.frombuffer(fh.read(84)[80:84], dtype="<u4")[0])
 
-        def _chunk_verts():
+        def _chunks():
+            """Yield (c*3, 3) float32 vertex blocks, re-reading from the start."""
             fh.seek(84)
-            remaining = n
-            while remaining:
-                c = min(chunk, remaining)
-                buf = np.frombuffer(fh.read(c * 50), dtype=np.uint8).reshape(c, 50)
-                yield np.frombuffer(buf[:, 12:48].tobytes(), dtype="<f4").reshape(c * 3, 3)
-                remaining -= c
+            left = n
+            while left:
+                c = min(chunk, left)
+                raw = np.frombuffer(fh.read(c * 50), dtype=np.uint8).reshape(c, 50)
+                yield np.frombuffer(raw[:, 12:48].tobytes(), dtype="<f4").reshape(c * 3, 3)
+                left -= c
 
-        # Pass 1: bounding box (streamed).
-        mn = np.full(3, np.inf)
-        mx = np.full(3, -np.inf)
-        for v in _chunk_verts():
-            mn = np.minimum(mn, v.min(0))
-            mx = np.maximum(mx, v.max(0))
-        diag = float(np.linalg.norm(mx - mn)) or 1.0
-        res = diag / max(1.0, (target_faces ** 0.5) * 0.55)    # grid cell ~ target density
+        # Pass 1: bounding box, so we never hold every vertex at once.
+        mn = np.full(3, np.inf, dtype=np.float32)
+        mx = np.full(3, -np.inf, dtype=np.float32)
+        for v in _chunks():
+            mn = np.minimum(mn, v.min(axis=0))
+            mx = np.maximum(mx, v.max(axis=0))
+        diag = float(np.linalg.norm((mx - mn).astype(np.float64))) or 1.0
+        res = np.float32(diag / max(1.0, (target_faces ** 0.5) * 0.55))  # cell ~ target density
         span = (np.floor((mx - mn) / res).astype(np.int64) + 2)
 
-        def _pack(v):
+        # Pass 2: grid-cell key per vertex. int32 when the grid fits, halving the
+        # key array and np.unique's working set.
+        key_dtype = np.int32 if int(span.prod()) < 2 ** 31 else np.int64
+        keys = np.empty(n * 3, dtype=key_dtype)
+        off = 0
+        for v in _chunks():
             g = np.floor((v - mn) / res).astype(np.int64)
-            return (g[:, 0] * span[1] + g[:, 1]) * span[2] + g[:, 2]
+            k = (g[:, 0] * span[1] + g[:, 1]) * span[2] + g[:, 2]
+            keys[off:off + len(v)] = k
+            off += len(v)
 
-        # Pass 2: collect all cell keys, reduce to the unique set (then freed).
-        keys = np.empty(n * 3, dtype=np.int64)
-        off = 0
-        for v in _chunk_verts():
-            k = _pack(v)
-            keys[off:off + len(k)] = k
-            off += len(k)
+        # unique() without return_inverse (that array alone would be n*3 int64);
+        # map back with a chunked searchsorted instead.
         uniq = np.unique(keys)
+        faces = np.empty((n, 3), dtype=np.int32)
+        for s in range(0, n * 3, chunk * 3):
+            block = np.searchsorted(uniq, keys[s:s + chunk * 3])
+            faces.reshape(-1)[s:s + len(block)] = block
         del keys
-
-        # Pass 3: map each face's 3 vertices to unique-cell indices (streamed).
-        faces = np.empty((n, 3), dtype=np.int64)
-        off = 0
-        for v in _chunk_verts():
-            c = len(v) // 3
-            idx = np.searchsorted(uniq, _pack(v))
-            faces[off:off + c] = idx.reshape(c, 3)
-            off += c
 
     # Decode unique cell keys back to grid coords → cell-centre vertices.
     gz = uniq % span[2]
@@ -273,7 +273,7 @@ def _cluster_reduce_binary_stl(path: str, target_faces: int, chunk: int = 200_00
     return mesh
 
 
-def load_mesh(path: str, max_faces: int = 80_000) -> trimesh.Trimesh:
+def load_mesh(path: str, max_faces: int = 30_000) -> trimesh.Trimesh:
     """Load an STL/mesh file, weld it, fix normals, and cap face count.
 
     Large binary STLs take a low-memory vertex-clustering path so a small host

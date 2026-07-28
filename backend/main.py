@@ -61,7 +61,7 @@ def _run_stl_analysis(stl_path: str, glb_path: str) -> dict:
         report.caveats.insert(0, "This model was very high-poly, so it was simplified "
                                  "for analysis — the verdict is approximate and the "
                                  "percentages are the more reliable signal. For an exact "
-                                 "result, upload a mesh under ~80k triangles.")
+                                 "result, upload a mesh under ~30k triangles.")
     mac.colorize(mesh, face_class).export(glb_path)
 
     # Orientation search / setup planning / tool search run many passes, so use a
