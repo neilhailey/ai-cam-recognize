@@ -143,6 +143,20 @@ def _perp_basis(d: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return u, v
 
 
+def _perp_basis_many(dirs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Vectorized :func:`_perp_basis` for an array of directions (n, 3)."""
+    helper = np.where(
+        (np.abs(dirs[:, 2]) < 0.9)[:, None],
+        np.array([0.0, 0.0, 1.0]),
+        np.array([1.0, 0.0, 0.0]),
+    )
+    u = np.cross(dirs, helper)
+    u /= np.maximum(np.linalg.norm(u, axis=1, keepdims=True), 1e-12)
+    v = np.cross(dirs, u)
+    v /= np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-12)
+    return u, v
+
+
 # ---------------------------------------------------------------------------
 # Loading
 # ---------------------------------------------------------------------------
@@ -283,27 +297,10 @@ def load_mesh(path: str, max_faces: int = 150_000) -> trimesh.Trimesh:
 # ---------------------------------------------------------------------------
 # Core reachability test
 # ---------------------------------------------------------------------------
-def _visible_mask(intersector, origins, d, offset_dirs, tool_radius, ring_k):
-    """Boolean array: True where a tool along ``d`` reaches ``origins`` unblocked.
-
-    A point is blocked if the centre ray hits material, or (when ``tool_radius``
-    > 0) if any of ``ring_k`` rays on the tool's circumference does — a first-order
-    model of tool-diameter / shank collision.
-    """
-    blocked = np.asarray(
-        intersector.intersects_any(ray_origins=origins, ray_directions=offset_dirs),
-        dtype=bool,
-    )
-    if tool_radius > 0:
-        u, v = _perp_basis(d)
-        for k in range(ring_k):
-            a = 2.0 * math.pi * k / ring_k
-            off = tool_radius * (math.cos(a) * u + math.sin(a) * v)
-            b = intersector.intersects_any(
-                ray_origins=origins + off, ray_directions=offset_dirs,
-            )
-            blocked |= np.asarray(b, dtype=bool)
-    return ~blocked
+# Upper bound on rays per intersects_any call. Ray casting is dominated by
+# per-call overhead (very visible on throttled shared CPUs), so we batch many
+# directions per call; this caps the temporary array size.
+MAX_RAYS_PER_CALL = 1_500_000
 
 
 def _reachable_from_any(
@@ -339,27 +336,51 @@ def _reachable_from_any(
     reached = np.zeros(len(candidate_idx), dtype=bool)
     cand_normals = normals[candidate_idx]
     cand_centroids = centroids[candidate_idx]
+    directions = np.atleast_2d(directions)
 
-    for d in directions:
+    # Ray casting is dominated by per-call overhead, so batch many directions
+    # into each intersects_any call instead of one call per direction. Chunk the
+    # directions so the flattened (face, direction) ray array stays bounded.
+    n_cand = max(1, len(candidate_idx))
+    per_chunk = max(1, min(len(directions), MAX_RAYS_PER_CALL // n_cand))
+    lift = offset + tool_radius
+    u_all, v_all = (_perp_basis_many(directions) if tool_radius > 0 else (None, None))
+
+    for start in range(0, len(directions), per_chunk):
         todo = ~reached
         if not todo.any():
             break
+        chunk = directions[start:start + per_chunk]
+
         with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
-            facing = (cand_normals @ d) >= facing_min
-        active = todo & facing
+            facing = (cand_normals @ chunk.T) >= facing_min      # (n_cand, k)
+        active = facing & todo[:, None]
         if not active.any():
             continue
 
-        # Lift the ray origin off the surface. For the finite-tool ring we lift by
-        # the tool radius so a perpendicular ring offset on a slightly-tilted
-        # approach cannot dip back below a flat face into the solid.
-        lift = offset + tool_radius
-        origins = cand_centroids[active] + cand_normals[active] * lift
-        dirs = np.tile(d, (origins.shape[0], 1))
-        visible = _visible_mask(intersector, origins, d, dirs, tool_radius, ring_k)
+        fi, di = np.nonzero(active)                              # face / direction pairs
+        origins = cand_centroids[fi] + cand_normals[fi] * lift
+        ray_dirs = chunk[di]
 
-        active_positions = np.nonzero(active)[0]
-        reached[active_positions[visible]] = True
+        blocked = np.asarray(
+            intersector.intersects_any(ray_origins=origins, ray_directions=ray_dirs),
+            dtype=bool,
+        )
+        if tool_radius > 0:
+            u = u_all[start:start + per_chunk][di]
+            v = v_all[start:start + per_chunk][di]
+            for k in range(ring_k):
+                if blocked.all():
+                    break
+                a = 2.0 * math.pi * k / ring_k
+                off = tool_radius * (math.cos(a) * u + math.sin(a) * v)
+                blocked |= np.asarray(
+                    intersector.intersects_any(
+                        ray_origins=origins + off, ray_directions=ray_dirs),
+                    dtype=bool,
+                )
+
+        reached[fi[~blocked]] = True
 
     return reached
 
@@ -557,7 +578,7 @@ def _name_dir(v: np.ndarray) -> str:
     return _AXIS_NAMES[k] if dots[k] > 0.966 else "oblique"   # within ~15 deg
 
 
-def _candidate_up_directions(mesh: trimesh.Trimesh, max_n: int = 16) -> np.ndarray:
+def _candidate_up_directions(mesh: trimesh.Trimesh, max_n: int = 10) -> np.ndarray:
     """Axis-aligned directions plus the largest convex-hull face normals, deduped."""
     dirs = list(_AXIS_DIRS)
     try:
@@ -592,8 +613,8 @@ def _prep(mesh: trimesh.Trimesh):
 # ---------------------------------------------------------------------------
 def find_best_orientation(
     mesh: trimesh.Trimesh,
-    radial_step_deg: float = 6.0,
-    sphere_dirs: int = 200,
+    radial_step_deg: float = 15.0,
+    sphere_dirs: int = 80,
 ) -> dict:
     """
     Try several 'up' orientations and return the one requiring the lowest axis
@@ -712,9 +733,9 @@ def plan_setups(
 # ---------------------------------------------------------------------------
 def max_tool_diameter(
     mesh: trimesh.Trimesh,
-    sphere_dirs: int = 120,
+    sphere_dirs: int = 48,
     tol: float = 0.05,
-    iterations: int = 9,
+    iterations: int = 7,
 ) -> dict:
     """
     Estimate the largest tool diameter that still reaches essentially all the
