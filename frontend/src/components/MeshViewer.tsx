@@ -29,19 +29,26 @@ interface Props {
 
 /** Small coloured text label that always faces the camera. */
 function makeLabel(text: string, color: string): THREE.Sprite {
+  const font = 'bold 44px -apple-system, sans-serif'
+  // Measure first — a fixed-width canvas silently crops longer words
+  // ("mounting" came out as "ountir").
+  const probe = document.createElement('canvas').getContext('2d')!
+  probe.font = font
+  const w = Math.ceil(probe.measureText(text).width) + 16
+  const h = 64
   const c = document.createElement('canvas')
-  c.width = 128
-  c.height = 64
+  c.width = w
+  c.height = h
   const ctx = c.getContext('2d')!
+  ctx.font = font
   ctx.fillStyle = color
-  ctx.font = 'bold 44px -apple-system, sans-serif'
   ctx.textAlign = 'center'
   ctx.textBaseline = 'middle'
-  ctx.fillText(text, 64, 32)
+  ctx.fillText(text, w / 2, h / 2)
   const sprite = new THREE.Sprite(
     new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true }),
   )
-  sprite.scale.set(14, 7, 1)
+  sprite.scale.set((w / h) * 7, 7, 1)     // keep the text's aspect ratio
   return sprite
 }
 
@@ -179,7 +186,27 @@ export function MeshViewer({ url, verdict, rotaryAxis, gripFrac = 0.12, onLoadEr
             color: 0x9aa4b2, roughness: 0.5, metalness: 0.7,
             transparent: true, opacity: 0.55,   // see the gripped end through the jaws
           })
-          // chuck body at the gripped (negative) end
+          // Waste stock left on each end: this is what the chuck and tailstock
+          // actually grip — the finished part itself is never clamped.
+          const stockR = Math.max(crossR * 0.55, 4)
+          const stockL = along * 0.22
+          const stockMat = new THREE.MeshStandardMaterial({
+            color: 0xc8a97a, roughness: 0.9, metalness: 0.0,
+          })
+          for (const sign of [-1, 1]) {
+            const stub = new THREE.Mesh(
+              new THREE.CylinderGeometry(stockR, stockR, stockL, 20), stockMat)
+            if (rotaryAxis === 'x') stub.rotation.z = Math.PI / 2
+            stub.position.copy(
+              dir.clone().multiplyScalar(sign * (along / 2 + stockL * 0.45))).setZ(centreZ)
+            group.add(stub)
+          }
+          const sLabel = makeLabel('waste stock', '#c8a97a')
+          sLabel.position.copy(
+            dir.clone().multiplyScalar(-(along / 2) - stockL * 0.45)).setZ(centreZ - stockR - 7)
+          group.add(sLabel)
+
+          // chuck body clamping that stock
           const chuck = new THREE.Mesh(new THREE.CylinderGeometry(chuckR, chuckR, along * 0.10, 24), steel)
           // tailstock cone at the far end
           const tail = new THREE.Mesh(new THREE.ConeGeometry(chuckR * 0.55, along * 0.14, 20), steel)
@@ -242,6 +269,10 @@ export function MeshViewer({ url, verdict, rotaryAxis, gripFrac = 0.12, onLoadEr
           const dir = VIEW_DIRS[view]
           // Looking straight down/up, Z cannot also be "up" on screen — use +Y,
           // which is what CAD packages show for top and bottom views.
+          // Z is up everywhere except looking straight along it, where it cannot
+          // also be "up" on screen. Crucially this RESETS to Z on every other
+          // view — leaving the camera in a Y-up frame made all later dragging
+          // tumble the part about the wrong axis.
           const topLike = view === 'top' || view === 'bottom'
           camera.up.set(0, topLike ? 1 : 0, topLike ? 0 : 1)
           camera.position.copy(t).addScaledVector(

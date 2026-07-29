@@ -75,13 +75,14 @@ def _run_stl_analysis(stl_path: str, glb_path: str, pre_simplified: bool = False
                                  "as the more reliable signal.")
 
     # For 4-axis, the part is mounted along its longest axis, so lay it down that
-    # way for display (a rigid rotation, so the per-face results still apply) and
-    # recolour the end the chuck grips.
+    # way for display (a rigid rotation, so the per-face results still apply).
+    # The chuck grips waste stock left on each end, not the model itself, so the
+    # model keeps its machinability colours all over — the viewer draws the stock.
     display_mesh, chuck_axis = mesh, None
     if report.verdict == mac.VERDICT_4AXIS and report.best_rotary_axis:
         display_mesh = mac.lay_down_along(mesh, report.best_rotary_axis)
         chuck_axis = "x"
-    mac.colorize(display_mesh, face_class, chuck_axis=chuck_axis).export(glb_path)
+    mac.colorize(display_mesh, face_class).export(glb_path)
 
     # Orientation search / setup planning / tool search run many passes, so use a
     # decimated copy for speed (falls back to full res if the simplifier is absent).
@@ -164,7 +165,6 @@ async def analyze_stl(file: UploadFile = File(...), pre_simplified: bool = Form(
             "5axis": "red - undercut, needs a tilted approach (5-axis)",
             "enclosed": "black - fully enclosed, no external tool can reach",
             "fixture": "grey - mounting face, clamped (excluded)",
-            "chuck": "blue - end gripped by the rotary chuck (4-axis)",
         },
     }
 

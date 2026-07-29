@@ -69,10 +69,10 @@ export function SetupPlanCard(
 }
 
 export function MountingCard(
-  { mounting, rotary, verdict }: { mounting: Mounting; rotary: Rotary; verdict: Verdict },
+  { mounting, verdict }: { mounting: Mounting; rotary?: Rotary; verdict: Verdict },
 ) {
   const how = verdict === '4-axis'
-    ? `Held in a rotary chuck, spinning about ${(rotary.axis ?? 'x').toUpperCase()}`
+    ? 'Held between chuck and tailstock by waste stock on each end'
     : 'Clamped flat on the bed'
   const found = mounting.source === 'flat-face'
     ? `largest flat face (${mounting.area_pct}% of the surface)`
@@ -84,7 +84,9 @@ export function MountingCard(
         {how}, on the {found}.
       </p>
       <div className="plan-card__meta">
-        Shown in the viewer{verdict === '4-axis' ? ' — blue is the end inside the chuck' : ''}.
+        Shown in the viewer{verdict === '4-axis'
+          ? ' — the tan stubs are waste stock for the chuck and tailstock, cut off afterwards'
+          : ''}.
         {mounting.flipped ? ' Model is flipped.' : ''} Use “Flip model” to mount the other way up.
       </div>
     </div>

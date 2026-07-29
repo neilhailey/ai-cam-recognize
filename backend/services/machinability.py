@@ -239,6 +239,20 @@ def orient_for_machining(mesh: trimesh.Trimesh, flip: bool = False) -> tuple[tri
         out.apply_transform(trimesh.transformations.rotation_matrix(math.pi, [1, 0, 0]))
     out.apply_translation([0.0, 0.0, -float(out.bounds[0][2])])   # sit on z=0
 
+    # A relief has a flat back and a carved front, and both are "large flat faces",
+    # so the plane search can land on the carved side and mount the part face-down.
+    # The flat side is the one whose area sits almost entirely in one plane, so
+    # compare the two and turn the part over if the smoother face ended up on top.
+    nz = np.nan_to_num(np.asarray(out.face_normals, dtype=np.float64))[:, 2]
+    zc = np.asarray(out.triangles_center, dtype=np.float64)[:, 2]
+    a = np.asarray(out.area_faces, dtype=np.float64)
+    height = max(float(out.extents[2]), 1e-9)
+    flat_down = float(a[(nz < -0.9) & (zc < 0.05 * height)].sum())
+    flat_up = float(a[(nz > 0.9) & (zc > 0.95 * height)].sum())
+    if flat_up > flat_down * 1.15:
+        out.apply_transform(trimesh.transformations.rotation_matrix(math.pi, [1, 0, 0]))
+        out.apply_translation([0.0, 0.0, -float(out.bounds[0][2])])
+
     # By construction the part now rests on the z=0 plane, so that is the mounting
     # plane; measure how much surface actually lies in it.
     centroids = np.asarray(out.triangles_center, dtype=np.float64)

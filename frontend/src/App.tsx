@@ -179,7 +179,7 @@ export function App() {
             />
             <div className="viewer-caption">
               Drag to orbit · {stl.report.verdict === '4-axis'
-                ? 'blue = held in chuck · red = undercut'
+                ? 'tan = waste stock held in the chuck · red = undercut'
                 : 'red = undercut regions'}
             </div>
           </div>

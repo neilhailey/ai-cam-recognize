@@ -47,7 +47,6 @@ export function StatBars({ report }: { report: StlReport }) {
         <li><span className="dot" style={{ background: '#f44336' }} /> undercut / 5-axis</li>
         <li><span className="dot" style={{ background: '#212121' }} /> enclosed</li>
         <li><span className="dot" style={{ background: '#969696' }} /> mounting face (excluded)</li>
-        <li><span className="dot" style={{ background: '#58a6ff' }} /> held in chuck</li>
       </ul>
     </div>
   )
