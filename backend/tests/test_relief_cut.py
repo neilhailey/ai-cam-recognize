@@ -53,9 +53,10 @@ def test_scallop_grows_with_stepover():
 
 def test_height_map_matches_the_part():
     m = _plate_with_groove()
-    z, cell = rc.sample_height_map(m, grid=120)
+    z, cell, hit = rc.sample_height_map(m, grid=120)
     assert cell > 0
     assert np.isfinite(z).all()
     # plate top sits at 20; the slot cuts a groove into it
     assert abs(float(z.max()) - 20.0) < 1.0, z.max()
     assert float(z.max()) - float(z.min()) > 2.0, (z.min(), z.max())
+    assert hit.any(), 'no rays hit the part'

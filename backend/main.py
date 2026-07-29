@@ -21,6 +21,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
 from services import machinability as mac
+from services import relief_cut
 from services import vision
 
 load_dotenv(Path(__file__).parent / ".env")
@@ -103,6 +104,15 @@ def _run_stl_analysis(stl_path: str, glb_path: str, pre_simplified: bool = False
             display_mesh, chuck_axis, steps=36,
             exclude=np.nonzero(fixture | voids)[0])
 
+    # Relief cut preview: how much detail each ball-nose size would lose.
+    # Only meaningful for 2.5D parts, where the surface is a height map.
+    cut_curve = None
+    if report.is_relief:
+        try:
+            cut_curve = relief_cut.cut_preview_curve(display_mesh)
+        except Exception:
+            cut_curve = None
+
     stock_geo = mac.stock_metrics(display_mesh, chuck_axis)
     extents = [round(float(x), 3) for x in display_mesh.extents]
     bounds = [[round(float(v), 3) for v in row] for row in display_mesh.bounds]
@@ -127,6 +137,7 @@ def _run_stl_analysis(stl_path: str, glb_path: str, pre_simplified: bool = False
                        "looks_like_mm": bool(max(extents) >= 10.0)},
         "stock_geometry": stock_geo,
         "sweep": sweep,
+        "cut_preview": cut_curve,
     }
 
 
@@ -174,6 +185,7 @@ async def analyze_stl(file: UploadFile = File(...), pre_simplified: bool = Form(
         "dimensions": result["dimensions"],
         "stock_geometry": result["stock_geometry"],
         "sweep": result["sweep"],
+        "cut_preview": result["cut_preview"],
         "glb_url": f"/api/files/{session_id}/analysis.glb",
         "legend": {
             "3axis": "green - reachable straight down (3-axis)",

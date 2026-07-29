@@ -202,3 +202,11 @@ body {
 }
 .playbar input[type=range] { width: 150px; accent-color: var(--accent); }
 .playbar__label { font-size: 11.5px; color: var(--muted); min-width: 48px; }
+
+.cut-slider { width: 100%; accent-color: var(--accent); margin: 4px 0 8px; }
+.cut-scale { display: flex; gap: 3px; margin: 2px 0 10px; }
+.cut-tick { flex: 1; height: 5px; border-radius: 3px; background: var(--accent); }
+.cut-tick--on { outline: 1px solid var(--text); }
+.cut-verdict--good { color: #7bd88f; }
+.cut-verdict--warn { color: #ffd479; }
+.cut-verdict--bad  { color: #ff8f8f; }

@@ -9,6 +9,7 @@ import { MeshViewer } from './components/MeshViewer'
 import { PhotoResultCard } from './components/PhotoResultCard'
 import { MountingCard, OrientationCard, SetupPlanCard, ToolingCard } from './components/PlanCards'
 import { StockCard } from './components/StockCard'
+import { CutPreviewCard } from './components/CutPreviewCard'
 
 type Mode = 'idle' | 'loading' | 'stl' | 'photo' | 'error'
 
@@ -30,6 +31,9 @@ export function App() {
   const [stage, setStage] = useState<'preparing' | 'uploading'>('uploading')
   const [note, setNote] = useState('')
   const [flipped, setFlipped] = useState(false)
+  // One place for the part's real size: the stock advice and the cut preview
+  // both need it, and the analysis itself is scale-invariant.
+  const [longestMm, setLongestMm] = useState('')
   const photoUrlRef = useRef('')
   const lastMeshRef = useRef<{ file: File; reduced: boolean } | null>(null)
 
@@ -61,7 +65,10 @@ export function App() {
         }
         setStage('uploading')
         lastMeshRef.current = { file: prep.file, reduced: prep.reduced }
-        setStl(await analyzeStl(prep.file, prep.reduced, false))
+        const res = await analyzeStl(prep.file, prep.reduced, false)
+        setLongestMm(res.dimensions?.looks_like_mm
+          ? String(Math.round(Math.max(...res.dimensions.extents))) : '')
+        setStl(res)
         setFlipped(false)
         setMode('stl')
       } else {
@@ -163,6 +170,18 @@ export function App() {
                 geo={stl.stock_geometry}
                 verdict={stl.report.verdict}
                 looksLikeMm={stl.dimensions?.looks_like_mm ?? false}
+                longestMm={longestMm}
+                onLongestMm={setLongestMm}
+              />
+            )}
+            {stl.cut_preview?.ok && (
+              <CutPreviewCard
+                preview={stl.cut_preview}
+                mmPerUnit={(() => {
+                  const v = parseFloat(longestMm)
+                  const u = Math.max(...(stl.stock_geometry?.extents ?? [0]))
+                  return v > 0 && u > 0 ? v / u : 0
+                })()}
               />
             )}
             <MountingCard mounting={stl.mounting} rotary={stl.rotary} verdict={stl.report.verdict} />

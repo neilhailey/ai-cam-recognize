@@ -544,6 +544,30 @@ def decimate(mesh: trimesh.Trimesh, target_faces: int) -> trimesh.Trimesh:
         return mesh
 
 
+def binary_stl_is_plate(path: str, n: int, samples: int = 20_000) -> bool:
+    """Is a binary STL wide and shallow (a relief/plate)? Sampled, no full load.
+
+    Used to pick the face budget before reducing: a relief carries its detail in
+    a thin Z band, so the usual budget smooths the carving away — which then
+    shows up as a cut preview claiming even a huge cutter loses nothing.
+    """
+    try:
+        step = max(1, n // samples)
+        lo = np.full(3, np.inf)
+        hi = np.full(3, -np.inf)
+        with open(path, "rb") as fh:
+            for i in range(0, n, step):
+                fh.seek(84 + i * 50 + 12)
+                v = np.frombuffer(fh.read(36), dtype="<f4").reshape(3, 3)
+                lo = np.minimum(lo, v.min(0))
+                hi = np.maximum(hi, v.max(0))
+        ext = hi - lo
+        wide = float(max(ext[0], ext[1]))
+        return bool(wide > 0 and float(ext[2]) / wide < 0.45)
+    except Exception:
+        return False
+
+
 def binary_stl_face_count(path: str) -> Optional[int]:
     """Return the triangle count if ``path`` is a binary STL, else None.
 
@@ -600,6 +624,7 @@ def _cluster_reduce_binary_stl(path: str, target_faces: int, chunk: int = 200_00
         # overhangs and turn a 3-axis carving into a false 4/5-axis verdict.
         ext = (mx - mn).astype(np.float64)
         diag = float(np.linalg.norm(ext)) or 1.0
+
         cells = max(4.0, (target_faces ** 0.5) * 0.55)
         res = np.maximum(ext / cells, diag * 1e-6).astype(np.float32)   # (3,)
         span = (np.floor(ext / res).astype(np.int64) + 2)
@@ -657,6 +682,10 @@ def load_mesh(path: str, max_faces: int = 30_000) -> trimesh.Trimesh:
     can process them; everything else uses trimesh's loader + quadric decimation.
     """
     n_bin = binary_stl_face_count(path)
+    # Reliefs need far more triangles than a solid of the same size, and they are
+    # cheap to analyse (the verdict short-circuits), so give them a bigger budget.
+    if n_bin is not None and binary_stl_is_plate(path, n_bin):
+        max_faces = max(max_faces, 80_000)
     if n_bin is not None and n_bin > max_faces:
         out = _cluster_reduce_binary_stl(path, max_faces)
         # Per-axis cells keep depth detail, but on flat or elongated parts they

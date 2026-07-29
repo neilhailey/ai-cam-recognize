@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo } from 'react'
 import { recommendStock, type StockGeometry } from '../lib/stock'
 import type { Verdict } from '../types'
 
@@ -6,6 +6,8 @@ interface Props {
   geo: StockGeometry
   verdict: Verdict
   looksLikeMm: boolean
+  longestMm: string
+  onLongestMm: (v: string) => void
   onStockChange?: (mm: { d?: number; l?: number; w?: number; t?: number } | null) => void
 }
 
@@ -17,12 +19,8 @@ interface Props {
  * The analysis is scale-invariant, so changing the size re-computes instantly
  * with no round-trip to the server.
  */
-export function StockCard({ geo, verdict, looksLikeMm, onStockChange }: Props) {
+export function StockCard({ geo, verdict, looksLikeMm, longestMm, onLongestMm, onStockChange }: Props) {
   const longestUnits = Math.max(...(geo?.extents ?? [1]))
-  // If the file already looks like millimetres, trust it; otherwise ask.
-  const [longestMm, setLongestMm] = useState<string>(
-    looksLikeMm ? String(Math.round(longestUnits)) : '',
-  )
 
   const mmPerUnit = useMemo(() => {
     const v = parseFloat(longestMm)
@@ -46,7 +44,7 @@ export function StockCard({ geo, verdict, looksLikeMm, onStockChange }: Props) {
           <input
             type="number" min="1" step="1" placeholder="e.g. 180"
             value={longestMm}
-            onChange={(e) => setLongestMm(e.target.value)}
+            onChange={(e) => onLongestMm(e.target.value)}
           />
           mm
         </span>
