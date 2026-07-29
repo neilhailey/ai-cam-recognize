@@ -47,8 +47,17 @@ function makeLabel(text: string, color: string): THREE.Sprite {
   ctx.textBaseline = 'middle'
   ctx.fillText(text, w / 2, h / 2)
   const sprite = new THREE.Sprite(
-    new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(c), transparent: true }),
+    new THREE.SpriteMaterial({
+      map: new THREE.CanvasTexture(c),
+      transparent: true,
+      // Axis labels sit at bed level, so the slab and the part were burying
+      // their lower halves — a half-hidden "X" reads as "v". Draw them last and
+      // ignore depth, the way CAD gizmo labels behave.
+      depthTest: false,
+      depthWrite: false,
+    }),
   )
+  sprite.renderOrder = 999
   sprite.scale.set((w / h) * 7, 7, 1)     // keep the text's aspect ratio
   return sprite
 }
