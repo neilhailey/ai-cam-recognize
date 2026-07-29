@@ -4,6 +4,21 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { Verdict } from '../types'
 
+export type ViewName = 'iso' | 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom'
+
+/** Camera offsets from the target, in the Z-up machine frame. */
+const VIEW_DIRS: Record<ViewName, [number, number, number]> = {
+  iso: [1, -1, 0.8],
+  front: [0, -1, 0],
+  back: [0, 1, 0],
+  left: [-1, 0, 0],
+  right: [1, 0, 0],
+  top: [0, 0, 1],
+  bottom: [0, 0, -1],
+}
+
+const VIEW_BUTTONS: ViewName[] = ['iso', 'front', 'back', 'left', 'right', 'top', 'bottom']
+
 interface Props {
   url: string
   verdict?: Verdict
@@ -41,6 +56,7 @@ function makeLabel(text: string, color: string): THREE.Sprite {
  */
 export function MeshViewer({ url, verdict, rotaryAxis, gripFrac = 0.12, onLoadError }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
+  const apiRef = useRef<{ setView: (v: ViewName, refit?: boolean) => void } | null>(null)
   const onErrRef = useRef(onLoadError)
   useEffect(() => { onErrRef.current = onLoadError }, [onLoadError])
 
@@ -70,11 +86,22 @@ export function MeshViewer({ url, verdict, rotaryAxis, gripFrac = 0.12, onLoadEr
     fill.position.set(-1.5, 1, -0.5)
     scene.add(fill)
 
+    // CAD/CAM conventions: the model holds still until you move it, left-drag
+    // orbits, right-drag pans, wheel zooms toward the cursor, and Z stays up so
+    // the part never rolls onto its side.
     const controls = new OrbitControls(camera, renderer.domElement)
     controls.enableDamping = true
-    controls.dampingFactor = 0.06
-    controls.autoRotate = true
-    controls.autoRotateSpeed = 0.7
+    controls.dampingFactor = 0.12          // settles quickly instead of drifting
+    controls.rotateSpeed = 0.8
+    controls.zoomSpeed = 0.9
+    controls.panSpeed = 0.8
+    controls.screenSpacePanning = true
+    controls.zoomToCursor = true
+    controls.mouseButtons = {
+      LEFT: THREE.MOUSE.ROTATE,
+      MIDDLE: THREE.MOUSE.DOLLY,
+      RIGHT: THREE.MOUSE.PAN,
+    }
 
     const group = new THREE.Group()
     scene.add(group)
@@ -203,12 +230,27 @@ export function MeshViewer({ url, verdict, rotaryAxis, gripFrac = 0.12, onLoadEr
         }
 
         // frame the whole setup
-        const d = Math.max(dim.length() * 1.5, 140)
-        camera.position.set(d * 0.75, -d * 0.85, d * 0.55)
+        const fit = Math.max(dim.length() * 1.5, 140)
         controls.target.set(0, 0, dim.z * 0.45)
-        controls.minDistance = 40
-        controls.maxDistance = 1200
-        controls.update()
+        controls.minDistance = 20
+        controls.maxDistance = 1600
+
+        /** Jump to a named view, keeping the current zoom distance. */
+        const setView = (view: ViewName, refit = false) => {
+          const t = controls.target
+          const dist = refit ? fit : camera.position.distanceTo(t)
+          const dir = VIEW_DIRS[view]
+          // Looking straight down/up, Z cannot also be "up" on screen — use +Y,
+          // which is what CAD packages show for top and bottom views.
+          const topLike = view === 'top' || view === 'bottom'
+          camera.up.set(0, topLike ? 1 : 0, topLike ? 0 : 1)
+          camera.position.copy(t).addScaledVector(
+            new THREE.Vector3(...dir).normalize(), dist)
+          camera.lookAt(t)
+          controls.update()
+        }
+        setView('iso', true)
+        apiRef.current = { setView }
       },
       undefined,
       (err) => onErrRef.current?.(String((err as ErrorEvent)?.message || err)),
@@ -233,11 +275,28 @@ export function MeshViewer({ url, verdict, rotaryAxis, gripFrac = 0.12, onLoadEr
     return () => {
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', onResize)
+      apiRef.current = null
       controls.dispose()
       renderer.dispose()
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement)
     }
   }, [url, verdict, rotaryAxis, gripFrac])
 
-  return <div ref={mountRef} style={{ width: '100%', height: '100%' }} />
+  return (
+    <div className="viewer">
+      <div ref={mountRef} className="viewer__canvas" />
+      <div className="viewbar">
+        {VIEW_BUTTONS.map((v) => (
+          <button
+            key={v}
+            className="viewbar__btn"
+            title={v === 'iso' ? 'Isometric (reset zoom)' : `${v} view`}
+            onClick={() => apiRef.current?.setView(v, v === 'iso')}
+          >
+            {v === 'iso' ? 'Iso' : v[0].toUpperCase() + v.slice(1)}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
 }
