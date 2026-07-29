@@ -66,6 +66,7 @@ def _run_stl_analysis(stl_path: str, glb_path: str, pre_simplified: bool = False
     # onto the workholding and the bed we draw matches what was analysed.
     mesh, mounting = mac.orient_for_machining(mesh, flip=flip)
 
+    quality = mac.mesh_quality(mesh)
     report, face_class = mac.analyze(mesh)
     if bool(mesh.metadata.get("approximate")) or pre_simplified:
         report.caveats.insert(0, "This model was very high-poly, so it was simplified to "
@@ -98,6 +99,7 @@ def _run_stl_analysis(stl_path: str, glb_path: str, pre_simplified: bool = False
         "setups": setups,
         "tooling": tooling,
         "mounting": mounting,
+        "mesh_quality": quality,
         "rotary": {
             # 'axis' is the axis in the DISPLAYED frame: for 4-axis the part is
             # laid down along X, so that is what the viewer draws the chuck on.
@@ -152,6 +154,7 @@ async def analyze_stl(file: UploadFile = File(...), pre_simplified: bool = Form(
         "setups": result["setups"],
         "tooling": result["tooling"],
         "mounting": result["mounting"],
+        "mesh_quality": result["mesh_quality"],
         "rotary": result["rotary"],
         "dimensions": result["dimensions"],
         "glb_url": f"/api/files/{session_id}/analysis.glb",

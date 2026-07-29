@@ -16,6 +16,8 @@ export interface StlReport {
   n_faces: number
   ray_backend: string
   rotary_length: number
+  is_relief: boolean
+  sides: number
   caveats: string[]
 }
 
@@ -70,6 +72,12 @@ export interface Dimensions {
   looks_like_mm: boolean
 }
 
+export interface MeshQuality {
+  watertight: boolean | null
+  winding_consistent: boolean | null
+  warnings: string[]
+}
+
 export interface StlResponse {
   session_id: string
   report: StlReport
@@ -77,6 +85,7 @@ export interface StlResponse {
   setups: SetupPlan
   tooling: ToolingResult
   mounting: Mounting
+  mesh_quality: MeshQuality
   rotary: Rotary
   dimensions: Dimensions
   glb_url: string

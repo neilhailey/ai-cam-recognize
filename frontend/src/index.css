@@ -158,3 +158,9 @@ body {
   border: 1px solid var(--border);
 }
 .btn--ghost:hover { border-color: var(--accent); filter: none; }
+
+.warn {
+  font-size: 12.5px; line-height: 1.5; color: #ffd479;
+  background: #2a2410; border: 1px solid #6b5a1e;
+  border-radius: 10px; padding: 9px 12px;
+}

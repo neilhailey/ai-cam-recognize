@@ -17,7 +17,25 @@ export function OrientationCard({ orientation }: { orientation: OrientationResul
   )
 }
 
-export function SetupPlanCard({ plan }: { plan: SetupPlan }) {
+export function SetupPlanCard(
+  { plan, verdict, rotary }: { plan: SetupPlan; verdict?: Verdict; rotary?: Rotary },
+) {
+  if (verdict === '4-axis') {
+    return (
+      <div className="plan-card">
+        <div className="plan-card__title">🔁 Setup plan</div>
+        <p className="plan-card__body">
+          <strong>One rotary setup.</strong> Held between chuck and tailstock, the part
+          turns to present every side{rotary?.axis ? '' : ''} — the whole form is cut in a
+          single run.
+        </p>
+        <div className="plan-card__meta">
+          A small tab is left at each end where it is gripped; those are trimmed off
+          afterwards.
+        </div>
+      </div>
+    )
+  }
   return (
     <div className="plan-card">
       <div className="plan-card__title">🔁 3-axis setup plan</div>
@@ -25,7 +43,9 @@ export function SetupPlanCard({ plan }: { plan: SetupPlan }) {
         {plan.n_setups === 0 ? (
           'No single-direction setup reaches this part.'
         ) : plan.fully_covered ? (
-          <>Fully cuttable in <strong>{plan.n_setups} 3-axis setup{plan.n_setups > 1 ? 's' : ''}</strong> (flips).</>
+          plan.n_setups === 1
+            ? <>Fully cuttable in a <strong>single 3-axis setup</strong> — no flip needed.</>
+            : <>Fully cuttable in <strong>{plan.n_setups} 3-axis setups</strong> ({plan.n_setups - 1} flip{plan.n_setups > 2 ? 's' : ''}).</>
         ) : (
           <>
             <strong>{plan.n_setups}</strong> 3-axis setup{plan.n_setups > 1 ? 's' : ''} cover{' '}

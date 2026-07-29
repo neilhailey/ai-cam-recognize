@@ -163,6 +163,40 @@ def test_hollow_model_voids_do_not_drive_the_verdict():
     assert report.verdict != mac.VERDICT_5AXIS, report.to_dict()
 
 
+def _gear_blank():
+    """Flat disc with a bore — a gear blank clamped on its base."""
+    body = trimesh.creation.cylinder(radius=30, height=8, sections=64)
+    bore = trimesh.creation.cylinder(radius=8, height=20, sections=48)
+    return _clean(body.difference(bore))
+
+
+def test_flat_part_needs_only_one_setup():
+    """A gear blank is finished from the top; its base is clamped, not cut."""
+    m, _ = mac.orient_for_machining(_gear_blank())
+    report, _ = mac.analyze(m)
+    assert report.verdict == mac.VERDICT_3AXIS, report.to_dict()
+    assert report.sides == 1, report.to_dict()
+    assert "single setup" in report.verdict_label
+    plan = mac.plan_setups(m)
+    assert plan["n_setups"] == 1 and plan["fully_covered"], plan
+
+
+def test_curved_part_still_needs_the_flip():
+    """A sphere touches the bed at a point — its underside needs a second setup."""
+    m, _ = mac.orient_for_machining(sphere())
+    report, _ = mac.analyze(m)
+    assert report.sides == 2, report.to_dict()
+    assert "2-sided" in report.verdict_label, report.to_dict()
+
+
+def test_setup_plan_ignores_the_clamped_mounting_face():
+    """The planner must judge the same surface as the verdict."""
+    m, _ = mac.orient_for_machining(_gear_blank())
+    plan = mac.plan_setups(m)
+    assert plan["setups"][0]["direction"] == "+Z", plan
+    assert plan["uncoverable_pct"] == 0.0, plan
+
+
 def test_detect_mounting_face_finds_the_flat_base():
     face = mac.detect_mounting_face(box())          # 40 x 40 x 20
     assert face["source"] == "flat-face", face

@@ -149,10 +149,13 @@ export function App() {
         <div className="result">
           <div className="result__left">
             {note && <div className="note">{note}</div>}
+            {stl.mesh_quality?.warnings?.map((w, i) => (
+              <div key={i} className="warn">⚠️ {w}</div>
+            ))}
             <VerdictCard report={stl.report} />
             <StatBars report={stl.report} />
             <OrientationCard orientation={stl.orientation} />
-            <SetupPlanCard plan={stl.setups} />
+            <SetupPlanCard plan={stl.setups} verdict={stl.report.verdict} rotary={stl.rotary} />
             <ToolingCard tooling={stl.tooling} dimensions={stl.dimensions} />
             <MountingCard mounting={stl.mounting} rotary={stl.rotary} verdict={stl.report.verdict} />
             <details className="caveats">

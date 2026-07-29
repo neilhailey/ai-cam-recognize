@@ -77,6 +77,8 @@ class AnalysisReport:
     n_faces: int
     ray_backend: str                   # "embree" or "trimesh"
     rotary_length: float = 0.0         # part length along the rotary axis
+    is_relief: bool = False            # 2.5D plate carved from the top
+    sides: int = 1                     # 3-axis setups needed (1, or 2 if flipped)
     caveats: list = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -90,6 +92,8 @@ class AnalysisReport:
             "n_faces": self.n_faces,
             "ray_backend": self.ray_backend,
             "rotary_length": round(self.rotary_length, 2),
+            "is_relief": self.is_relief,
+            "sides": self.sides,
             "caveats": self.caveats,
         }
 
@@ -292,6 +296,96 @@ def interior_void_faces(mesh: trimesh.Trimesh) -> np.ndarray:
     return mask
 
 
+def mesh_quality(mesh: trimesh.Trimesh) -> dict:
+    """Flag mesh defects that make any verdict unreliable.
+
+    Most real STLs are not clean solids. A mesh whose winding is inconsistent has
+    face normals that disagree about which way is "out", and one that is not
+    watertight has holes — both can silently skew an accessibility result, so the
+    user should be told rather than handed a confident wrong number.
+    """
+    warnings: list = []
+    try:
+        watertight = bool(mesh.is_watertight)
+        winding = bool(mesh.is_winding_consistent)
+    except Exception:
+        return {"watertight": None, "winding_consistent": None, "warnings": []}
+
+    if not winding:
+        warnings.append("This mesh has inconsistent face winding — its normals do not "
+                        "agree on which side is outside. Results may be unreliable; "
+                        "repairing the mesh in your CAD/CAM tool is recommended.")
+    if not watertight:
+        warnings.append("This mesh is not watertight (it has holes or is an open "
+                        "surface). It was analysed as-is, but a sealed solid gives a "
+                        "more trustworthy verdict.")
+    return {"watertight": watertight, "winding_consistent": winding, "warnings": warnings}
+
+
+def relief_probe(mesh: trimesh.Trimesh, grid: int = 56, intersector=None) -> dict:
+    """Is this a 2.5D relief — a plate carved only from the top?
+
+    Fires a grid of rays straight down and counts how many times each column
+    crosses the surface. A plate whose top is a height map gives exactly two
+    crossings (top, then bottom); a third crossing means material genuinely
+    overhangs something.
+
+    This deliberately ignores face normals and fine geometry, so it survives the
+    two things that break the per-face test on real STLs: decimation stair-steps,
+    and meshes whose winding is inconsistent (open or badly exported surfaces).
+    """
+    result = {"is_relief": False, "clean_fraction": 0.0, "flatness": 0.0}
+    try:
+        ext = np.asarray(mesh.extents, dtype=np.float64)
+        if ext[2] <= 0 or max(ext[0], ext[1]) <= 0:
+            return result
+        # A relief is wide and shallow. Anything chunky is not a plate.
+        flatness = float(ext[2] / max(ext[0], ext[1]))
+        result["flatness"] = round(flatness, 3)
+        if flatness > 0.45:
+            return result
+
+        if intersector is None:
+            intersector, _ = _make_intersector(mesh)
+        lo, hi = mesh.bounds
+        xs = np.linspace(lo[0], hi[0], grid + 2)[1:-1]
+        ys = np.linspace(lo[1], hi[1], grid + 2)[1:-1]
+        X, Y = np.meshgrid(xs, ys)
+        n = X.size
+        origins = np.column_stack([X.ravel(), Y.ravel(),
+                                   np.full(n, hi[2] + float(ext.max()))])
+        dirs = np.tile([0.0, 0.0, -1.0], (n, 1))
+        _tri, ray_idx = intersector.intersects_id(origins, dirs, multiple_hits=True)
+        counts = np.bincount(np.asarray(ray_idx, dtype=np.int64), minlength=n)
+        hit = counts[counts > 0]
+        if not len(hit):
+            return result
+        clean = float((hit <= 2).mean())
+        result["clean_fraction"] = round(clean, 3)
+        result["is_relief"] = clean >= 0.85
+        return result
+    except Exception:
+        return result
+
+
+def excluded_faces(mesh: trimesh.Trimesh, vertical_deg: float = 10.0) -> tuple[np.ndarray, np.ndarray]:
+    """``(fixture, voids)`` — the faces that are never machined.
+
+    ``fixture`` is the mounting face resting on the bed (clamped, so no tool
+    reaches it and none needs to). ``voids`` are hollow-model interiors, which do
+    not exist in solid stock. Shared by the verdict and the setup planner so both
+    answer the same question about the same surface.
+    """
+    normals = np.nan_to_num(np.asarray(mesh.face_normals, dtype=np.float64),
+                            posinf=0.0, neginf=0.0)
+    z = np.asarray(mesh.triangles_center, dtype=np.float64)[:, 2]
+    z_min = float(z.min())
+    z_span = max(float(z.max()) - z_min, 1e-9)
+    down = normals[:, 2] < -math.cos(math.radians(vertical_deg))
+    fixture = down & (z < (z_min + 0.02 * z_span))
+    return fixture, interior_void_faces(mesh) & (~fixture)
+
+
 def rotary_axis_for(mesh: trimesh.Trimesh) -> tuple[str, float]:
     """Rotary axis for 4-axis work: the part's longest dimension.
 
@@ -391,7 +485,8 @@ def _cluster_reduce_binary_stl(path: str, target_faces: int, chunk: int = 200_00
     The grid math is chunked because a whole-array expression would allocate
     large float64 temporaries. Each surviving vertex is the *average* of the
     vertices that fell in its cell, which tracks the original surface closely
-    enough to preserve the axis verdict.
+    enough to preserve the axis verdict. Cell size is per-axis so shallow reliefs
+    keep their depth detail.
     """
     with open(path, "rb") as fh:
         n = int(np.frombuffer(fh.read(84)[80:84], dtype="<u4")[0])
@@ -412,9 +507,16 @@ def _cluster_reduce_binary_stl(path: str, target_faces: int, chunk: int = 200_00
         for v in _chunks():
             mn = np.minimum(mn, v.min(axis=0))
             mx = np.maximum(mx, v.max(axis=0))
-        diag = float(np.linalg.norm((mx - mn).astype(np.float64))) or 1.0
-        res = np.float32(diag / max(1.0, (target_faces ** 0.5) * 0.55))  # cell ~ target density
-        span = (np.floor((mx - mn) / res).astype(np.int64) + 2)
+        # Per-axis cell size: give every axis the SAME number of cells rather than
+        # one cell size everywhere. A relief is wide but shallow (e.g. 0.10 x 0.07
+        # x 0.02), so a single cell size leaves the depth with almost no
+        # resolution — the surface gets quantised into stair-steps that read as
+        # overhangs and turn a 3-axis carving into a false 4/5-axis verdict.
+        ext = (mx - mn).astype(np.float64)
+        diag = float(np.linalg.norm(ext)) or 1.0
+        cells = max(4.0, (target_faces ** 0.5) * 0.55)
+        res = np.maximum(ext / cells, diag * 1e-6).astype(np.float32)   # (3,)
+        span = (np.floor(ext / res).astype(np.int64) + 2)
 
         # Pass 2: grid-cell key per vertex. int32 when the grid fits, halving the
         # key array and np.unique's working set.
@@ -607,28 +709,42 @@ def analyze(
 
     face_class = np.full(n, CLASS_ENCLOSED, dtype=np.int64)
 
-    # --- fixturing: faces lying in the mounting plane are clamped, not machined
-    z = centroids[:, 2]
-    z_min = float(z.min())
-    z_span = max(float(z.max()) - z_min, 1e-9)
-    down = normals[:, 2] < -math.cos(math.radians(vertical_deg))   # points down
-    near_floor = z < (z_min + 0.02 * z_span)
-    fixture = down & near_floor
+    # --- faces that are never machined: clamped mounting face, hollow interiors
+    fixture, voids = excluded_faces(mesh, vertical_deg)
     face_class[fixture] = CLASS_FIXTURE
 
-    # Interior shells of a hollow model do not exist in solid stock — set aside.
-    voids = interior_void_faces(mesh) & (~fixture)
-
     considered = np.nonzero(~fixture & ~voids)[0]
-    tol_area = area_tol * (float(areas[considered].sum()) or 1.0)
+    considered_area = float(areas[considered].sum()) or 1.0
+    tol_area = area_tol * considered_area
 
     def area_of(mask_idx) -> float:
         return float(areas[mask_idx].sum())
 
-    # --- 3-axis: {+Z} (and -Z if flip allowed) --------------------------------
-    z_dirs = np.array([[0, 0, 1.0]] + ([[0, 0, -1.0]] if allow_flip else []))
-    ok3 = _reachable_from_any(intersector, centroids, normals, considered,
-                              z_dirs, diagonal, eps_face, offset, tool_radius)
+    # --- 3-axis: cut from +Z, and only flip the stock if that leaves work -----
+    # Testing +Z on its own first is what tells us whether a second setup is
+    # genuinely needed: a part like a gear, clamped on its base, is finished in
+    # one setup even though a flip is available.
+    # A 2.5D relief is a plate carved from above: by definition nothing overhangs,
+    # so the whole top surface is reachable in one pass. Decided by ray-column
+    # parity rather than per-face rays, because decimation stair-steps and bad
+    # winding make the per-face test fail on exactly these parts.
+    relief = relief_probe(mesh, intersector=intersector)
+    if relief["is_relief"]:
+        ok3 = np.ones(len(considered), dtype=bool)
+    else:
+        ok3 = _reachable_from_any(intersector, centroids, normals, considered,
+                                  np.array([[0, 0, 1.0]]), diagonal, eps_face,
+                                  offset, tool_radius)
+    sides = 1
+    if allow_flip and not relief["is_relief"] and (considered_area - area_of(considered[ok3])) > tol_area:
+        left = np.nonzero(~ok3)[0]
+        okb = _reachable_from_any(intersector, centroids, normals, considered[left],
+                                  np.array([[0, 0, -1.0]]), diagonal, eps_face,
+                                  offset, tool_radius)
+        if okb.any():
+            ok3[left[okb]] = True
+            sides = 2
+
     three_idx = considered[ok3]
     face_class[three_idx] = CLASS_3AXIS
 
@@ -683,8 +799,7 @@ def analyze(
     # outer surface — a deep pocket, or a slot too narrow for the tool — stays in
     # and correctly counts against the verdict.
     void_area = area_of(np.nonzero(voids)[0])
-    machinable_area = float(areas[considered].sum()) or 1.0
-    tol_area = area_tol * machinable_area
+    machinable_area = considered_area
 
     pct3 = 100.0 * a3 / machinable_area
     pct4 = 100.0 * (a3 + a4) / machinable_area     # cumulative: a 4-axis machine does 3-axis work
@@ -695,6 +810,9 @@ def analyze(
         verdict = VERDICT_3AXIS
     elif (machinable_area - a3 - a4) <= tol_area:
         verdict = VERDICT_4AXIS
+        # Held between chuck and tailstock, the part spins to present every side,
+        # so it is a SINGLE setup — only the tabs at each end are left to trim.
+        sides = 1
     else:
         verdict = VERDICT_5AXIS
 
@@ -704,11 +822,12 @@ def analyze(
     vertical_pct = 100.0 * vertical_area / machinable_area
 
     label = {
-        VERDICT_3AXIS: "3-axis" + (" (2-sided)" if allow_flip and pct3 > 50 else ""),
+        VERDICT_3AXIS: ("3-axis relief (single setup)" if relief["is_relief"]
+                        else "3-axis" + (" (2-sided)" if sides == 2 else " (single setup)")),
         # The part gets mounted along its longest dimension, so name it that way
         # rather than by a model-space axis letter, which flips as soon as the
         # part is laid into the chuck.
-        VERDICT_4AXIS: "4-axis (rotary along the part's length)",
+        VERDICT_4AXIS: "4-axis (single rotary setup)",
         VERDICT_5AXIS: "5-axis required",
     }[verdict]
 
@@ -729,9 +848,20 @@ def analyze(
             "Verdict is for the model's current up-orientation; re-orienting the "
             "stock can change the answer.",
         ]
-    if allow_flip:
-        caveats.append("Assumes the stock can be flipped once (2-sided setup) for "
-                       "3-axis work; the mounting face itself is excluded.")
+    if relief["is_relief"]:
+        caveats.append("Detected as a 2.5D relief: the surface is a height map with "
+                       "nothing overhanging, so it is carved from the top in one "
+                       "setup. The blank's underside is clamped and never cut.")
+    elif verdict == VERDICT_4AXIS:
+        caveats.append("One rotary setup: held between chuck and tailstock, the part "
+                       "turns to present every side. Only the tabs at each end are "
+                       "left, to be trimmed off afterwards.")
+    elif sides == 2:
+        caveats.append("Needs the stock flipped once: some faces are only reachable "
+                       "from below. The mounting face itself is clamped and excluded.")
+    else:
+        caveats.append("Everything reachable is cut in a single setup — no flip needed. "
+                       "The mounting face is clamped and excluded.")
     if enclosed_pct > 0.5:
         caveats.append(f"This model is hollow — ~{enclosed_pct:.0f}% of its surface is "
                        "an internal void. Cut from solid stock that interior does not "
@@ -752,6 +882,8 @@ def analyze(
         n_faces=n,
         ray_backend=backend,
         rotary_length=rotary_length,
+        is_relief=bool(relief["is_relief"]),
+        sides=sides,
         caveats=caveats,
     )
     return report, face_class
@@ -874,6 +1006,16 @@ def find_best_orientation(
     is_current = _name_dir(best_up) == "+Z"
     improved = _TIER[best_rep.verdict] < _TIER[current.verdict]
 
+    # Only advise a re-orientation that is actually worth doing:
+    #  - an oblique mounting is impractical to clamp, whatever it scores;
+    #  - dropping 4-axis (one rotary setup) to 3-axis but needing a flip is not a
+    #    win — it trades one setup for two.
+    if _name_dir(best_up) == "oblique":
+        improved = False
+    if (improved and current.verdict == VERDICT_4AXIS
+            and best_rep.verdict == VERDICT_3AXIS and best_rep.sides == 2):
+        improved = False
+
     if is_current or not improved:
         description = "The model is already oriented for the fewest axes."
     else:
@@ -911,8 +1053,20 @@ def plan_setups(
     intersector, normals, centroids, areas, diagonal, _ = _prep(mesh)
     offset = diagonal * 1e-4
     eps_face = math.sin(math.radians(1.0))
-    all_idx = np.arange(len(normals))
-    total = float(areas.sum()) or 1.0
+
+    # A relief is carved from the top in one pass — say so, rather than letting the
+    # greedy search invent flips out of decimation noise.
+    if relief_probe(mesh, intersector=intersector)["is_relief"]:
+        return {"n_setups": 1,
+                "setups": [{"direction": "+Z", "vector": [0.0, 0.0, 1.0],
+                            "cumulative_coverage_pct": 100.0}],
+                "uncoverable_pct": 0.0, "fully_covered": True}
+
+    # Plan over the same surface the verdict judges: the clamped mounting face and
+    # hollow interiors are never cut, so counting them would invent extra setups.
+    fixture, voids = excluded_faces(mesh)
+    all_idx = np.nonzero(~fixture & ~voids)[0]
+    total = float(areas[all_idx].sum()) or 1.0
 
     # candidate setup directions: the up-candidates and their negatives
     ups = _candidate_up_directions(mesh)
@@ -936,21 +1090,21 @@ def plan_setups(
         for i, m in enumerate(masks):
             if i in [c[0] for c in chosen]:
                 continue
-            gain = float(areas[m & ~covered].sum())
+            gain = float(areas[all_idx[m & ~covered]].sum())
             if gain > best_gain:
                 best_gain, best_i = gain, i
         if best_i < 0 or best_gain <= total * 1e-4:
             break
         covered |= masks[best_i]
         chosen.append((best_i, deduped[best_i]))
-        cov = float(areas[covered].sum()) / total
+        cov = float(areas[all_idx[covered]].sum()) / total
         steps.append({"direction": _name_dir(deduped[best_i]),
                       "vector": [round(float(x), 3) for x in deduped[best_i]],
                       "cumulative_coverage_pct": round(100.0 * cov, 1)})
         if cov >= coverage_target:
             break
 
-    uncovered_pct = round(100.0 * float(areas[~covered].sum()) / total, 1)
+    uncovered_pct = round(100.0 * float(areas[all_idx[~covered]].sum()) / total, 1)
     return {
         "n_setups": len(steps),
         "setups": steps,
