@@ -8,6 +8,7 @@ import { StatBars } from './components/StatBars'
 import { MeshViewer } from './components/MeshViewer'
 import { PhotoResultCard } from './components/PhotoResultCard'
 import { MountingCard, OrientationCard, SetupPlanCard, ToolingCard } from './components/PlanCards'
+import { StockCard } from './components/StockCard'
 
 type Mode = 'idle' | 'loading' | 'stl' | 'photo' | 'error'
 
@@ -157,6 +158,13 @@ export function App() {
             <OrientationCard orientation={stl.orientation} />
             <SetupPlanCard plan={stl.setups} verdict={stl.report.verdict} rotary={stl.rotary} />
             <ToolingCard tooling={stl.tooling} dimensions={stl.dimensions} />
+            {stl.stock_geometry && (
+              <StockCard
+                geo={stl.stock_geometry}
+                verdict={stl.report.verdict}
+                looksLikeMm={stl.dimensions?.looks_like_mm ?? false}
+              />
+            )}
             <MountingCard mounting={stl.mounting} rotary={stl.rotary} verdict={stl.report.verdict} />
             <details className="caveats">
               <summary>What this check does &amp; doesn’t cover</summary>
@@ -172,6 +180,7 @@ export function App() {
           <div className="result__viewer">
             <MeshViewer
               url={apiUrl(stl.glb_url)}
+              sweep={stl.sweep}
               verdict={stl.report.verdict}
               rotaryAxis={stl.rotary?.axis ?? null}
               gripFrac={stl.rotary?.grip_frac}

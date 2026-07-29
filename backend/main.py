@@ -14,6 +14,7 @@ import os
 import uuid
 from pathlib import Path
 
+import numpy as np
 from dotenv import load_dotenv
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -92,6 +93,17 @@ def _run_stl_analysis(stl_path: str, glb_path: str, pre_simplified: bool = False
     setups = mac.plan_setups(search_mesh)
     tooling = mac.max_tool_diameter(search_mesh)
 
+    # Coverage animation data: which rotation step first reaches each face.
+    # Only for rotary work — a 3-axis part is cut from one direction, so there is
+    # nothing to sweep.
+    sweep = None
+    if chuck_axis:
+        fixture, voids = mac.excluded_faces(display_mesh)
+        sweep = mac.rotation_sweep(
+            display_mesh, chuck_axis, steps=36,
+            exclude=np.nonzero(fixture | voids)[0])
+
+    stock_geo = mac.stock_metrics(display_mesh, chuck_axis)
     extents = [round(float(x), 3) for x in display_mesh.extents]
     bounds = [[round(float(v), 3) for v in row] for row in display_mesh.bounds]
     return {
@@ -113,6 +125,8 @@ def _run_stl_analysis(stl_path: str, glb_path: str, pre_simplified: bool = False
         # normalised/unitless rather than millimetres, so the UI can stop saying "mm".
         "dimensions": {"extents": extents, "bounds": bounds,
                        "looks_like_mm": bool(max(extents) >= 10.0)},
+        "stock_geometry": stock_geo,
+        "sweep": sweep,
     }
 
 
@@ -158,6 +172,8 @@ async def analyze_stl(file: UploadFile = File(...), pre_simplified: bool = Form(
         "mesh_quality": result["mesh_quality"],
         "rotary": result["rotary"],
         "dimensions": result["dimensions"],
+        "stock_geometry": result["stock_geometry"],
+        "sweep": result["sweep"],
         "glb_url": f"/api/files/{session_id}/analysis.glb",
         "legend": {
             "3axis": "green - reachable straight down (3-axis)",

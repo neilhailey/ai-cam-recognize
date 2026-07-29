@@ -1,8 +1,8 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import * as THREE from 'three'
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import type { Verdict } from '../types'
+import type { Sweep, Verdict } from '../types'
 
 export type ViewName = 'iso' | 'front' | 'back' | 'left' | 'right' | 'top' | 'bottom'
 
@@ -21,6 +21,7 @@ const VIEW_BUTTONS: ViewName[] = ['iso', 'front', 'back', 'left', 'right', 'top'
 
 interface Props {
   url: string
+  sweep?: Sweep | null
   verdict?: Verdict
   rotaryAxis?: 'x' | 'y' | null
   gripFrac?: number
@@ -61,11 +62,29 @@ function makeLabel(text: string, color: string): THREE.Sprite {
  * Y-up node transform, so the model's +Z really is "up" and three.js's default
  * Y-up would lay every part on its side.
  */
-export function MeshViewer({ url, verdict, rotaryAxis, gripFrac = 0.12, onLoadError }: Props) {
+export function MeshViewer({ url, sweep, verdict, rotaryAxis, gripFrac = 0.12, onLoadError }: Props) {
   const mountRef = useRef<HTMLDivElement>(null)
   const apiRef = useRef<{ setView: (v: ViewName, refit?: boolean) => void } | null>(null)
+  const cutRef = useRef<((step: number) => void) | null>(null)
+  const [step, setStep] = useState<number>(-1)   // -1 = finished part, no animation
   const onErrRef = useRef(onLoadError)
   useEffect(() => { onErrRef.current = onLoadError }, [onLoadError])
+
+  // Repaint whenever the scrubber moves (the effect below rebuilds cutRef on load).
+  useEffect(() => { cutRef.current?.(step) }, [step, url])
+
+  // Play through the rotation once, then leave the finished part on screen.
+  const play = () => {
+    const total = sweep?.steps ?? 0
+    if (!total) return
+    let i = 0
+    setStep(0)
+    const id = setInterval(() => {
+      i += 1
+      if (i >= total) { clearInterval(id); setStep(-1); return }
+      setStep(i)
+    }, 90)
+  }
 
   useEffect(() => {
     const mount = mountRef.current
@@ -141,6 +160,47 @@ export function MeshViewer({ url, verdict, rotaryAxis, gripFrac = 0.12, onLoadEr
         root.scale.setScalar(s)
         root.position.set(-center.x * s, -center.y * s, -box.min.z * s)
         group.add(root)
+
+        // --- coverage animation: repaint faces as the rotation reaches them ---
+        // colorize() unmerged the vertices, so each face owns three consecutive
+        // entries in the index buffer and can be recoloured independently.
+        if (sweep?.first?.length) {
+          const meshes: THREE.Mesh[] = []
+          root.traverse((o) => { if ((o as THREE.Mesh).isMesh) meshes.push(o as THREE.Mesh) })
+          const target = meshes[0]
+          const geom = target?.geometry as THREE.BufferGeometry | undefined
+          const colAttr = geom?.getAttribute('color') as THREE.BufferAttribute | undefined
+          if (geom && colAttr) {
+            const idx = geom.getIndex()
+            const original = Float32Array.from(colAttr.array as ArrayLike<number>)
+            // glTF may store colours as normalised bytes rather than floats;
+            // writing 0..1 into a Uint8Array truncates to 0 and renders black.
+            const K = colAttr.array instanceof Float32Array ? 1 : 255
+            const STOCK = [0.78 * K, 0.66 * K, 0.48 * K]   // uncut blank
+            const faces = sweep.first
+            const vertsOf = (f: number) => idx
+              ? [idx.getX(f * 3), idx.getX(f * 3 + 1), idx.getX(f * 3 + 2)]
+              : [f * 3, f * 3 + 1, f * 3 + 2]
+
+            cutRef.current = (upto: number) => {
+              const arr = colAttr.array as Float32Array
+              for (let f = 0; f < faces.length; f++) {
+                const when = faces[f]
+                // -2 is never machined (clamped/interior): always its real colour.
+                const cut = upto < 0 || when === -2 || (when >= 0 && when <= upto)
+                for (const v of vertsOf(f)) {
+                  const o = v * 3
+                  if (cut) {
+                    arr[o] = original[o]; arr[o + 1] = original[o + 1]; arr[o + 2] = original[o + 2]
+                  } else {
+                    arr[o] = STOCK[0]; arr[o + 1] = STOCK[1]; arr[o + 2] = STOCK[2]
+                  }
+                }
+              }
+              colAttr.needsUpdate = true
+            }
+          }
+        }
 
         const dim = new THREE.Vector3(size.x * s, size.y * s, size.z * s)
         const radius = Math.max(dim.x, dim.y) / 2
@@ -307,6 +367,7 @@ export function MeshViewer({ url, verdict, rotaryAxis, gripFrac = 0.12, onLoadEr
       cancelAnimationFrame(raf)
       window.removeEventListener('resize', onResize)
       apiRef.current = null
+      cutRef.current = null
       controls.dispose()
       renderer.dispose()
       if (renderer.domElement.parentNode === mount) mount.removeChild(renderer.domElement)
@@ -316,6 +377,18 @@ export function MeshViewer({ url, verdict, rotaryAxis, gripFrac = 0.12, onLoadEr
   return (
     <div className="viewer">
       <div ref={mountRef} className="viewer__canvas" />
+      {sweep?.steps ? (
+        <div className="playbar">
+          <button className="viewbar__btn" onClick={play} title="Play the rotation">▶ Cut</button>
+          <input
+            type="range" min={-1} max={sweep.steps - 1} value={step}
+            onChange={(e) => setStep(Number(e.target.value))}
+          />
+          <span className="playbar__label">
+            {step < 0 ? 'finished' : `${Math.round((step / sweep.steps) * 360)}°`}
+          </span>
+        </div>
+      ) : null}
       <div className="viewbar">
         {VIEW_BUTTONS.map((v) => (
           <button
