@@ -17,6 +17,13 @@ const VIEW_DIRS: Record<ViewName, [number, number, number]> = {
   bottom: [0, 0, -1],
 }
 
+/**
+ * The rotary coverage scrubber is hidden for now — it reveals faces by
+ * reachability, which reads as "nothing much happens" next to a real cut
+ * preview. Flip to true to bring it back; the data still ships from the API.
+ */
+const SHOW_COVERAGE_SCRUBBER = false
+
 const VIEW_BUTTONS: ViewName[] = ['iso', 'front', 'back', 'left', 'right', 'top', 'bottom']
 
 interface Props {
@@ -386,7 +393,7 @@ export function MeshViewer({ url, sweep, verdict, rotaryAxis, gripFrac = 0.12, o
   return (
     <div className="viewer">
       <div ref={mountRef} className="viewer__canvas" />
-      {sweep?.steps ? (
+      {SHOW_COVERAGE_SCRUBBER && sweep?.steps ? (
         <div className="playbar">
           <button className="viewbar__btn" onClick={play} title="Play the rotation">▶ Cut</button>
           <input

@@ -171,15 +171,15 @@ def _perp_basis_many(dirs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
 # Mounting / workholding
 # ---------------------------------------------------------------------------
 def detect_mounting_face(mesh: trimesh.Trimesh, min_area_frac: float = 0.005) -> dict:
-    """Find the surface the part would most naturally be mounted on.
+    """Find the surface the part would actually be stood on.
 
-    Takes the largest set of *coplanar* faces: quantize each face's plane
-    (normal direction + offset along it) and sum area per plane. A printed or
-    carved part almost always has a flat base, which wins easily. Purely
-    organic models have no such plane, so we fall back to the largest facet of
-    the convex hull — the flattest place the part can rest.
+    A mounting face has to be one the part can *rest* on, which means it lies on
+    the convex hull — the part must sit entirely on one side of it. Searching all
+    coplanar clusters instead picks up big flat areas partway up a carving (the
+    field around a relief, a flat shoulder) and stands the part on its face.
 
-    Returns ``{normal, point, area_pct, source}``.
+    So: take each distinct hull plane, measure how much real surface lies flat
+    against it, and choose the largest such contact patch.
     """
     normals = np.nan_to_num(np.asarray(mesh.face_normals, dtype=np.float64),
                             posinf=0.0, neginf=0.0)
@@ -187,26 +187,40 @@ def detect_mounting_face(mesh: trimesh.Trimesh, min_area_frac: float = 0.005) ->
     areas = np.asarray(mesh.area_faces, dtype=np.float64)
     total = float(areas.sum()) or 1.0
     diag = float(np.linalg.norm(mesh.extents)) or 1.0
+    tol = diag * 0.01
 
-    # Quantize the plane each face lies in: direction to ~5 deg, offset to ~1/200 diag.
-    ndir = np.round(normals * 12.0).astype(np.int64)
-    offs = np.round(np.einsum("ij,ij->i", normals, centroids) / (diag / 200.0)).astype(np.int64)
-    keys = np.column_stack([ndir, offs[:, None]])
-    uniq, inv = np.unique(keys, axis=0, return_inverse=True)
-    plane_area = np.bincount(inv, weights=areas, minlength=len(uniq))
-    best = int(np.argmax(plane_area))
+    best = None
+    try:
+        hull = mesh.convex_hull
+        hn = np.asarray(hull.face_normals, dtype=np.float64)
+        hc = np.asarray(hull.triangles_center, dtype=np.float64)
+        hd = np.einsum("ij,ij->i", hn, hc)
+        ha = np.asarray(hull.area_faces, dtype=np.float64)
 
-    if plane_area[best] >= min_area_frac * total:
-        sel = np.nonzero(inv == best)[0]
-        w = areas[sel]
-        normal = (normals[sel] * w[:, None]).sum(0)
-        normal /= (np.linalg.norm(normal) or 1.0)
-        point = (centroids[sel] * w[:, None]).sum(0) / (w.sum() or 1.0)
-        return {"normal": normal, "point": point,
-                "area_pct": 100.0 * float(plane_area[best]) / total,
-                "source": "flat-face"}
+        # Merge hull facets describing the same plane, then try the biggest ones.
+        key = np.column_stack([np.round(hn * 24).astype(np.int64),
+                               np.round(hd / max(tol, 1e-12)).astype(np.int64)])
+        uniq, inv = np.unique(key, axis=0, return_inverse=True)
+        plane_area = np.bincount(inv, weights=ha, minlength=len(uniq))
+        for gi in np.argsort(-plane_area)[:24]:
+            sel = np.nonzero(inv == gi)[0]
+            n_avg = (hn[sel] * ha[sel, None]).sum(0)
+            n_avg /= (np.linalg.norm(n_avg) or 1.0)
+            d_avg = float((hd[sel] * ha[sel]).sum() / (ha[sel].sum() or 1.0))
+            with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+                on = ((normals @ n_avg) > 0.94) & (np.abs(centroids @ n_avg - d_avg) < tol)
+            contact = float(areas[on].sum())
+            if best is None or contact > best[0]:
+                best = (contact, n_avg,
+                        centroids[on].mean(0) if on.any() else np.asarray(mesh.centroid))
+    except Exception:
+        best = None
 
-    # Fallback: the biggest face of the convex hull is the flattest resting spot.
+    if best is not None and best[0] >= min_area_frac * total:
+        return {"normal": best[1], "point": best[2],
+                "area_pct": 100.0 * best[0] / total, "source": "flat-face"}
+
+    # Nothing flat enough to rest on — fall back to the flattest hull facet.
     try:
         hull = mesh.convex_hull
         i = int(np.argmax(hull.area_faces))
@@ -218,7 +232,6 @@ def detect_mounting_face(mesh: trimesh.Trimesh, min_area_frac: float = 0.005) ->
         return {"normal": np.array([0.0, 0.0, -1.0]),
                 "point": np.asarray(mesh.centroid, dtype=np.float64),
                 "area_pct": 0.0, "source": "default-down"}
-
 
 def orient_for_machining(mesh: trimesh.Trimesh, flip: bool = False) -> tuple[trimesh.Trimesh, dict]:
     """Stand the part on its mounting face, so +Z means 'straight down onto it'.
