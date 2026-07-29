@@ -432,6 +432,32 @@ def lay_down_along(mesh: trimesh.Trimesh, axis: str,
     return out
 
 
+def stock_metrics(mesh: trimesh.Trimesh, rotary_axis: Optional[str] = None) -> dict:
+    """Raw geometry a stock recommendation needs, in model units.
+
+    ``swept_radius`` is the largest distance any point sits from the rotary axis,
+    i.e. the radius the part sweeps when it spins — that is what sets the bar
+    diameter, not the bounding box, which would over-size a part whose section is
+    not centred.
+    """
+    v = np.asarray(mesh.vertices, dtype=np.float64)
+    ext = np.asarray(mesh.extents, dtype=np.float64)
+    out = {
+        "extents": [float(x) for x in ext],
+        "volume": float(abs(mesh.volume)) if mesh.is_watertight else 0.0,
+        "swept_radius": 0.0,
+        "axis_length": 0.0,
+    }
+    if rotary_axis in ("x", "y", "z"):
+        k = "xyz".index(rotary_axis)
+        perp = [i for i in (0, 1, 2) if i != k]
+        centre = v[:, perp].mean(axis=0)
+        r = np.linalg.norm(v[:, perp] - centre, axis=1)
+        out["swept_radius"] = float(r.max())
+        out["axis_length"] = float(ext[k])
+    return out
+
+
 def chuck_grip_mask(mesh: trimesh.Trimesh, axis: str, grip_frac: float = 0.12) -> np.ndarray:
     """Faces at the end of the part that the rotary chuck would clamp onto.
 

@@ -78,6 +78,13 @@ export interface MeshQuality {
   warnings: string[]
 }
 
+export interface StockGeometryDto {
+  extents: number[]
+  volume: number
+  swept_radius: number
+  axis_length: number
+}
+
 export interface StlResponse {
   session_id: string
   report: StlReport
@@ -88,6 +95,7 @@ export interface StlResponse {
   mesh_quality: MeshQuality
   rotary: Rotary
   dimensions: Dimensions
+  stock_geometry: StockGeometryDto
   glb_url: string
   legend: Record<string, string>
 }

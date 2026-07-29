@@ -181,3 +181,15 @@ body {
 }
 .viewbar__btn:hover { color: var(--text); border-color: var(--accent); }
 .viewbar__btn:active { background: var(--panel-2); }
+
+.scale-input { display: block; font-size: 12.5px; color: var(--muted); }
+.scale-input span { display: flex; align-items: center; gap: 7px; margin-top: 6px; }
+.scale-input input {
+  width: 110px; background: var(--panel-2); border: 1px solid var(--border);
+  color: var(--text); border-radius: 8px; padding: 6px 10px; font-size: 14px;
+}
+.scale-input input:focus { outline: none; border-color: var(--accent); }
+.stock-lines {
+  margin: 8px 0 10px; padding-left: 18px;
+  font-size: 12.5px; color: var(--muted); line-height: 1.6;
+}
