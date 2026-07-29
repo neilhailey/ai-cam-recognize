@@ -432,6 +432,39 @@ def lay_down_along(mesh: trimesh.Trimesh, axis: str,
     return out
 
 
+def rotation_sweep(mesh: trimesh.Trimesh, axis: str, steps: int = 36,
+                   exclude: Optional[np.ndarray] = None) -> dict:
+    """For each face, the first rotation step that can reach it.
+
+    Drives the coverage animation: as the part turns in the chuck, a face is
+    "cut" from the moment the tool can first see it. Returns -1 for faces no
+    radial approach reaches. Coarser than the verdict sweep (10 deg steps) —
+    this is for playback, not for deciding anything.
+    """
+    intersector, normals, centroids, areas, diagonal, _ = _prep(mesh)
+    offset = diagonal * 1e-4
+    eps_face = math.sin(math.radians(1.0))
+    dirs = _radial_directions(axis, 360.0 / steps)
+
+    first = np.full(len(normals), -1, dtype=np.int32)
+    if exclude is not None:
+        first[exclude] = -2                      # never cut (clamped / interior)
+    for di, d in enumerate(dirs):
+        todo = first == -1
+        if not todo.any():
+            break
+        with np.errstate(divide="ignore", over="ignore", invalid="ignore"):
+            active = todo & ((normals @ d) >= -eps_face)
+        if not active.any():
+            continue
+        org = centroids[active] + normals[active] * offset
+        blocked = np.asarray(intersector.intersects_any(
+            ray_origins=org, ray_directions=np.tile(d, (len(org), 1))), dtype=bool)
+        pos = np.nonzero(active)[0]
+        first[pos[~blocked]] = di
+    return {"steps": steps, "axis": axis, "first": first.tolist()}
+
+
 def stock_metrics(mesh: trimesh.Trimesh, rotary_axis: Optional[str] = None) -> dict:
     """Raw geometry a stock recommendation needs, in model units.
 
@@ -612,7 +645,14 @@ def load_mesh(path: str, max_faces: int = 30_000) -> trimesh.Trimesh:
     """
     n_bin = binary_stl_face_count(path)
     if n_bin is not None and n_bin > max_faces:
-        return _cluster_reduce_binary_stl(path, max_faces)
+        out = _cluster_reduce_binary_stl(path, max_faces)
+        # Per-axis cells keep depth detail, but on flat or elongated parts they
+        # also overshoot the face budget (which is a memory budget on a small
+        # host). One corrective pass with coarser cells lands near the target.
+        if len(out.faces) > max_faces * 1.5:
+            shrink = (max_faces / max(len(out.faces), 1)) ** 0.5
+            out = _cluster_reduce_binary_stl(path, max(int(max_faces * shrink * 0.9), 500))
+        return out
 
     loaded = trimesh.load(path, force="mesh")
     if isinstance(loaded, trimesh.Scene):

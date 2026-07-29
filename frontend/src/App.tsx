@@ -180,6 +180,7 @@ export function App() {
           <div className="result__viewer">
             <MeshViewer
               url={apiUrl(stl.glb_url)}
+              sweep={stl.sweep}
               verdict={stl.report.verdict}
               rotaryAxis={stl.rotary?.axis ?? null}
               gripFrac={stl.rotary?.grip_frac}

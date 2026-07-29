@@ -85,6 +85,13 @@ export interface StockGeometryDto {
   axis_length: number
 }
 
+export interface Sweep {
+  steps: number
+  axis: string
+  /** Per face: rotation step that first reaches it, -1 never, -2 not machined. */
+  first: number[]
+}
+
 export interface StlResponse {
   session_id: string
   report: StlReport
@@ -96,6 +103,7 @@ export interface StlResponse {
   rotary: Rotary
   dimensions: Dimensions
   stock_geometry: StockGeometryDto
+  sweep: Sweep | null
   glb_url: string
   legend: Record<string, string>
 }
