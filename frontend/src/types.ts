@@ -104,7 +104,6 @@ export interface StlResponse {
   dimensions: Dimensions
   stock_geometry: StockGeometryDto
   sweep: Sweep | null
-  cut_preview: import('./components/CutPreviewCard').CutPreview | null
   heightmap: import('./components/CutSimulator').HeightMap | null
   glb_url: string
   legend: Record<string, string>

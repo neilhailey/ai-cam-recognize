@@ -9,7 +9,6 @@ import { MeshViewer } from './components/MeshViewer'
 import { PhotoResultCard } from './components/PhotoResultCard'
 import { MountingCard, OrientationCard, SetupPlanCard, ToolingCard } from './components/PlanCards'
 import { StockCard } from './components/StockCard'
-import { CutPreviewCard } from './components/CutPreviewCard'
 import { CutSimulator } from './components/CutSimulator'
 
 type Mode = 'idle' | 'loading' | 'stl' | 'photo' | 'error'
@@ -174,16 +173,6 @@ export function App() {
                 looksLikeMm={stl.dimensions?.looks_like_mm ?? false}
                 longestMm={longestMm}
                 onLongestMm={setLongestMm}
-              />
-            )}
-            {stl.cut_preview?.ok && (
-              <CutPreviewCard
-                preview={stl.cut_preview}
-                mmPerUnit={(() => {
-                  const v = parseFloat(longestMm)
-                  const u = Math.max(...(stl.stock_geometry?.extents ?? [0]))
-                  return v > 0 && u > 0 ? v / u : 0
-                })()}
               />
             )}
             <MountingCard mounting={stl.mounting} rotary={stl.rotary} verdict={stl.report.verdict} />
