@@ -173,3 +173,32 @@ def cut_preview_curve(mesh: trimesh.Trimesh, grid: int = 240) -> dict:
         })
     return {"ok": True, "relief_depth": round(depth, 6), "points": points,
             "grid": [int(target.shape[1]), int(target.shape[0])]}
+
+
+def heightmap_payload(mesh: trimesh.Trimesh, grid: int = 190) -> dict:
+    """The relief as a height grid, for the browser to machine live.
+
+    Everything the simulator needs travels in this one payload: the surface to
+    cut, and the physical size of a cell so the tool can be scaled correctly.
+    The browser does the cutting itself — a ball at (x, y) can descend only to
+    the highest point of the surface under its footprint, which is cheap to
+    evaluate per position, so material removal animates without a round trip.
+    """
+    z, cell, hit = sample_height_map(mesh, grid)
+    lo, hi = mesh.bounds
+    zmin, zmax = float(z.min()), float(z.max())
+    # Ship as integers: 16-bit over the actual z range is well under the
+    # resolution of the mesh itself, and keeps the payload a few hundred KB.
+    span = max(zmax - zmin, 1e-9)
+    q = np.clip(((z - zmin) / span * 65535.0).round(), 0, 65535).astype(np.uint16)
+    return {
+        "w": int(z.shape[1]),
+        "h": int(z.shape[0]),
+        "cell": round(float(cell), 8),
+        "x0": round(float(lo[0]), 6),
+        "y0": round(float(lo[1]), 6),
+        "zmin": round(zmin, 6),
+        "zmax": round(zmax, 6),
+        "inside": [int(v) for v in hit.ravel().astype(np.uint8)],
+        "z": [int(v) for v in q.ravel()],
+    }

@@ -107,9 +107,11 @@ def _run_stl_analysis(stl_path: str, glb_path: str, pre_simplified: bool = False
     # Relief cut preview: how much detail each ball-nose size would lose.
     # Only meaningful for 2.5D parts, where the surface is a height map.
     cut_curve = None
+    heightmap = None
     if report.is_relief:
         try:
             cut_curve = relief_cut.cut_preview_curve(display_mesh)
+            heightmap = relief_cut.heightmap_payload(display_mesh)
         except Exception:
             cut_curve = None
 
@@ -138,6 +140,7 @@ def _run_stl_analysis(stl_path: str, glb_path: str, pre_simplified: bool = False
         "stock_geometry": stock_geo,
         "sweep": sweep,
         "cut_preview": cut_curve,
+        "heightmap": heightmap,
     }
 
 
@@ -186,6 +189,7 @@ async def analyze_stl(file: UploadFile = File(...), pre_simplified: bool = Form(
         "stock_geometry": result["stock_geometry"],
         "sweep": result["sweep"],
         "cut_preview": result["cut_preview"],
+        "heightmap": result["heightmap"],
         "glb_url": f"/api/files/{session_id}/analysis.glb",
         "legend": {
             "3axis": "green - reachable straight down (3-axis)",

@@ -10,6 +10,7 @@ import { PhotoResultCard } from './components/PhotoResultCard'
 import { MountingCard, OrientationCard, SetupPlanCard, ToolingCard } from './components/PlanCards'
 import { StockCard } from './components/StockCard'
 import { CutPreviewCard } from './components/CutPreviewCard'
+import { CutSimulator } from './components/CutSimulator'
 
 type Mode = 'idle' | 'loading' | 'stl' | 'photo' | 'error'
 
@@ -212,6 +213,19 @@ export function App() {
                 : 'red = undercut regions'}
             </div>
           </div>
+          {stl.heightmap && (
+            <div className="result__sim">
+              <div className="sim__title">🛠 Machining simulation</div>
+              <CutSimulator
+                map={stl.heightmap}
+                mmPerUnit={(() => {
+                  const v = parseFloat(longestMm)
+                  const u = Math.max(...(stl.stock_geometry?.extents ?? [0]))
+                  return v > 0 && u > 0 ? v / u : 0
+                })()}
+              />
+            </div>
+          )}
         </div>
       )}
 
