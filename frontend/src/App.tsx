@@ -17,6 +17,7 @@ const SAMPLES: { label: string; file: string }[] = [
   { label: 'Box (3-axis)', file: 'box.stl' },
   { label: 'Cross-drilled (4-axis)', file: 'cross_drilled.stl' },
   { label: 'Tilted pocket (5-axis)', file: 'tilted_pocket.stl' },
+  { label: 'Relief (cut preview)', file: 'relief_logo.stl' },
   { label: 'Mushroom photo', file: 'mushroom.png' },
 ]
 
